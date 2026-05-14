@@ -3,12 +3,16 @@ package juloo.keyboard2;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build.VERSION;
+import android.os.Handler;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.view.MotionEvent;
@@ -35,6 +39,46 @@ public class Keyboard2View extends View
   private Pointers _pointers;
 
   private Pointers.Modifiers _mods;
+  private VoiceInputController _voiceInputController;
+  private Handler _voiceGestureHandler = new Handler();
+  private int _voicePointerId = -1;
+  private KeyboardData.Key _voicePendingKey = null;
+  private float _voiceDownX = 0.f;
+  private float _voiceDownY = 0.f;
+  private boolean _voiceGestureActive = false;
+  private VoiceInputController.FanSelection _voiceFan =
+    VoiceInputController.FanSelection.NONE;
+  private final RectF _voiceAnchorRect = new RectF();
+  private final Paint _voicePanelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint _voiceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint _voiceHintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint _voiceMicPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint _voiceGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint _voiceSlotStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final RectF _voiceLeftSlotBounds = new RectF();
+  private final RectF _voiceRightSlotBounds = new RectF();
+  private final Runnable _voiceLongPressRunnable = new Runnable() {
+    @Override
+    public void run()
+    {
+      if (_voicePendingKey == null || _voiceInputController == null)
+        return;
+      Logs.debug("voice-space long-press fired");
+      if (!getKeyBounds(_voicePendingKey, _voiceAnchorRect))
+        return;
+      if (_voiceInputController.start(_voiceAnchorRect))
+      {
+        Logs.debug("voice-space long-press started");
+        _voiceGestureActive = true;
+        _voiceFan = VoiceInputController.FanSelection.NONE;
+        _voicePendingKey = null;
+        _pointers.onTouchCancel();
+        invalidate();
+      }
+      else
+        Logs.debug("voice-space long-press start rejected");
+    }
+  };
 
   private static int _currentWhat = 0;
 
@@ -113,10 +157,22 @@ public class Keyboard2View extends View
     reset();
   }
 
+  public void setVoiceInputController(VoiceInputController controller)
+  {
+    _voiceInputController = controller;
+    if (controller != null)
+      controller.set_ui_listener(() -> invalidate());
+  }
+
   public void reset()
   {
     _mods = Pointers.Modifiers.EMPTY;
     _pointers.clear();
+    _voiceGestureHandler.removeCallbacks(_voiceLongPressRunnable);
+    _voicePointerId = -1;
+    _voicePendingKey = null;
+    _voiceGestureActive = false;
+    _voiceFan = VoiceInputController.FanSelection.NONE;
     requestLayout();
     invalidate();
   }
@@ -195,10 +251,22 @@ public class Keyboard2View extends View
   public boolean onTouch(View v, MotionEvent event)
   {
     int p;
+    if (_voiceInputController != null
+        && _voiceInputController.get_overlay_state().visible
+        && !_voiceGestureActive)
+      return true;
+    if (_voiceGestureActive && handleVoiceGesture(event))
+      return true;
     switch (event.getActionMasked())
     {
       case MotionEvent.ACTION_UP:
       case MotionEvent.ACTION_POINTER_UP:
+        if (isVoiceInterceptPointer(event.getPointerId(event.getActionIndex())))
+        {
+          cancelVoiceLongPressIfNeeded(event.getPointerId(event.getActionIndex()));
+          return true;
+        }
+        cancelVoiceLongPressIfNeeded(event.getPointerId(event.getActionIndex()));
         _pointers.onTouchUp(event.getPointerId(event.getActionIndex()));
         break;
       case MotionEvent.ACTION_DOWN:
@@ -208,13 +276,38 @@ public class Keyboard2View extends View
         float ty = event.getY(p);
         KeyboardData.Key key = getKeyAtPosition(tx, ty);
         if (key != null)
+        {
+          if (shouldInterceptVoiceSpace(event.getPointerId(p), tx, ty, key))
+            return true;
           _pointers.onTouchDown(tx, ty, event.getPointerId(p), key);
+        }
         break;
       case MotionEvent.ACTION_MOVE:
+        if (_voicePendingKey != null)
+        {
+          int idx = event.findPointerIndex(_voicePointerId);
+          if (idx >= 0)
+          {
+            float dx = event.getX(idx) - _voiceDownX;
+            float dy = event.getY(idx) - _voiceDownY;
+            if (Math.abs(dx) + Math.abs(dy) > _config.swipe_dist_px / 3f)
+            {
+              cancelVoiceLongPress();
+              return true;
+            }
+          }
+          return true;
+        }
         for (p = 0; p < event.getPointerCount(); p++)
           _pointers.onTouchMove(event.getX(p), event.getY(p), event.getPointerId(p));
         break;
       case MotionEvent.ACTION_CANCEL:
+        if (_voicePendingKey != null)
+        {
+          cancelVoiceLongPress();
+          return true;
+        }
+        cancelVoiceLongPress();
         _pointers.onTouchCancel();
         break;
       default:
@@ -365,6 +458,7 @@ public class Keyboard2View extends View
       }
       y += row.height * _tc.row_height;
     }
+    drawVoiceOverlay(canvas);
   }
 
   @Override
@@ -481,5 +575,298 @@ public class Keyboard2View extends View
     float smaller_font = k.hasFlagsAny(KeyValue.FLAG_SMALLER_FONT) ? 0.75f : 1.f;
     float label_size = main_label ? _mainLabelSize : _subLabelSize;
     return label_size * smaller_font;
+  }
+
+  private void maybeStartVoiceLongPress(int pointerId, float x, float y,
+      KeyboardData.Key key)
+  {
+    if (_voiceInputController == null || !_voiceInputController.is_enabled())
+      return;
+    if (!isSpaceKey(key))
+      return;
+    Logs.debug("voice-space down pointer=" + pointerId);
+    _voicePointerId = pointerId;
+    _voicePendingKey = key;
+    _voiceDownX = x;
+    _voiceDownY = y;
+    _voiceGestureHandler.postDelayed(_voiceLongPressRunnable,
+        _config.longPressTimeout);
+  }
+
+  private boolean shouldInterceptVoiceSpace(int pointerId, float x, float y,
+      KeyboardData.Key key)
+  {
+    if (_voiceInputController == null || !_voiceInputController.is_enabled())
+      return false;
+    if (!isSpaceKey(key))
+      return false;
+    Logs.debug("voice-space intercept pointer=" + pointerId);
+    maybeStartVoiceLongPress(pointerId, x, y, key);
+    return true;
+  }
+
+  private boolean isVoiceInterceptPointer(int pointerId)
+  {
+    return _voicePendingKey != null && _voicePointerId == pointerId;
+  }
+
+  private void cancelVoiceLongPressIfNeeded(int pointerId)
+  {
+    if (_voicePointerId == pointerId)
+      cancelVoiceLongPress();
+  }
+
+  private void cancelVoiceLongPress()
+  {
+    if (_voicePendingKey != null)
+      Logs.debug("voice-space cancel pending pointer=" + _voicePointerId);
+    _voiceGestureHandler.removeCallbacks(_voiceLongPressRunnable);
+    _voicePointerId = -1;
+    _voicePendingKey = null;
+  }
+
+  private boolean handleVoiceGesture(MotionEvent event)
+  {
+    int idx;
+    switch (event.getActionMasked())
+    {
+      case MotionEvent.ACTION_MOVE:
+        idx = event.findPointerIndex(_voicePointerId);
+        if (idx >= 0)
+        {
+          _voiceFan = detectVoiceFan(event.getX(idx), event.getY(idx));
+          _voiceInputController.update_fan(_voiceFan);
+        }
+        invalidate();
+        return true;
+      case MotionEvent.ACTION_UP:
+      case MotionEvent.ACTION_POINTER_UP:
+        if (event.getPointerId(event.getActionIndex()) == _voicePointerId)
+        {
+          finishVoiceGesture();
+          return true;
+        }
+        break;
+      case MotionEvent.ACTION_CANCEL:
+        _voiceInputController.finish(VoiceInputController.ReleaseAction.CANCEL);
+        finishVoiceGestureState();
+        return true;
+    }
+    return false;
+  }
+
+  private void finishVoiceGesture()
+  {
+    VoiceInputController.ReleaseAction action =
+      (_voiceFan == VoiceInputController.FanSelection.CANCEL)
+      ? VoiceInputController.ReleaseAction.CANCEL
+      : (_voiceFan == VoiceInputController.FanSelection.SEND)
+        ? VoiceInputController.ReleaseAction.SEND
+        : VoiceInputController.ReleaseAction.COMMIT;
+    _voiceInputController.finish(action);
+    finishVoiceGestureState();
+  }
+
+  private void finishVoiceGestureState()
+  {
+    cancelVoiceLongPress();
+    _voiceGestureActive = false;
+    _voiceFan = VoiceInputController.FanSelection.NONE;
+    invalidate();
+  }
+
+  private VoiceInputController.FanSelection detectVoiceFan(float x, float y)
+  {
+    updateVoiceSlotBounds(_voiceAnchorRect, _voiceLeftSlotBounds, _voiceRightSlotBounds);
+    if (_voiceLeftSlotBounds.contains(x, y))
+      return VoiceInputController.FanSelection.CANCEL;
+    if (_voiceRightSlotBounds.contains(x, y))
+      return VoiceInputController.FanSelection.SEND;
+    return VoiceInputController.FanSelection.NONE;
+  }
+
+  private boolean isSpaceKey(KeyboardData.Key key)
+  {
+    for (int i = 0; i < key.keys.length; i++)
+    {
+      KeyValue value = key.keys[i];
+      if (value != null
+          && value.getKind() == KeyValue.Kind.Editing
+          && value.getEditing() == KeyValue.Editing.SPACE_BAR)
+        return true;
+    }
+    return false;
+  }
+
+  private boolean getKeyBounds(KeyboardData.Key target, RectF out)
+  {
+    float y = _tc.margin_top;
+    for (KeyboardData.Row row : _keyboard.rows)
+    {
+      y += row.shift * _tc.row_height;
+      float x = _marginLeft + _tc.margin_left;
+      float keyH = row.height * _tc.row_height - _tc.vertical_margin;
+      for (KeyboardData.Key key : row.keys)
+      {
+        x += key.shift * _keyWidth;
+        float keyW = _keyWidth * key.width - _tc.horizontal_margin;
+        if (key == target)
+        {
+          out.set(x, y, x + keyW, y + keyH);
+          return true;
+        }
+        x += _keyWidth * key.width;
+      }
+      y += row.height * _tc.row_height;
+    }
+    return false;
+  }
+
+  private void drawVoiceOverlay(Canvas canvas)
+  {
+    if (_voiceInputController == null)
+      return;
+    VoiceInputController.OverlayState state = _voiceInputController.get_overlay_state();
+    if (!state.visible)
+      return;
+
+    long now = SystemClock.uptimeMillis();
+    float pulse = 0.5f + 0.5f * (float)Math.sin((now - state.startedAtMs) / 220.0);
+    float panelHeight = Math.max(state.anchor.height() * 3.5f, _tc.row_height * 4.2f);
+    float panelBottom = Math.max(20.f, state.anchor.top - _tc.vertical_margin * 0.4f);
+    float panelTop = Math.max(0.f, panelBottom - panelHeight);
+    RectF panel = new RectF(0.f, panelTop, getWidth(), panelBottom);
+
+    _voiceGlowPaint.setStyle(Paint.Style.FILL);
+    _voiceGlowPaint.setColor(Color.argb(22, 156, 216, 255));
+    canvas.drawOval(new RectF(panel.left + panel.width() * 0.04f,
+        panel.top + panel.height() * 0.20f, panel.right - panel.width() * 0.04f,
+        panel.bottom + panel.height() * 0.18f), _voiceGlowPaint);
+    _voiceGlowPaint.setColor(Color.argb(18, 186, 238, 255));
+    canvas.drawOval(new RectF(panel.left + panel.width() * 0.18f,
+        panel.top + panel.height() * 0.10f, panel.right - panel.width() * 0.18f,
+        panel.bottom + panel.height() * 0.04f), _voiceGlowPaint);
+
+    drawVoiceLevel(canvas, panel, state.level, pulse, now);
+
+    drawVoiceFan(canvas, state.anchor, true,
+        state.fan == VoiceInputController.FanSelection.CANCEL,
+        Color.argb(220, 255, 101, 101));
+    drawVoiceFan(canvas, state.anchor, false,
+        state.fan == VoiceInputController.FanSelection.SEND,
+        Color.argb(220, 92, 171, 255));
+
+    _voiceTextPaint.setColor(Color.argb(246, 18, 24, 32));
+    _voiceTextPaint.setTextAlign(Paint.Align.CENTER);
+    _voiceTextPaint.setTextSize(_mainLabelSize * 0.84f);
+    String transcript = state.transcript.equals("")
+      ? getResources().getString(R.string.voice_input_listening)
+      : state.transcript;
+    int maxLen = Math.min(28, transcript.length());
+    canvas.drawText(transcript, 0, maxLen, panel.centerX(),
+        panelTop + panel.height() * 0.40f, _voiceTextPaint);
+
+    _voiceHintPaint.setColor(Color.argb(120, 86, 96, 108));
+    _voiceHintPaint.setTextAlign(Paint.Align.CENTER);
+    _voiceHintPaint.setTextSize(_subLabelSize * 1.18f);
+    canvas.drawText(state.status, panel.centerX(),
+        panelBottom - panel.height() * 0.14f, _voiceHintPaint);
+
+    postInvalidateOnAnimation();
+  }
+
+  private void drawVoiceLevel(Canvas canvas, RectF panel, float level, float pulse, long now)
+  {
+    int bars = 22;
+    float barW = 5f;
+    float gap = 6f;
+    float totalW = bars * barW + (bars - 1) * gap;
+    float startX = panel.centerX() - totalW / 2f;
+    float baseY = panel.top + panel.height() * 0.18f;
+    for (int i = 0; i < bars; i++)
+    {
+      float t = bars <= 1 ? 0f : (float)i / (bars - 1);
+      float wave = 0.5f + 0.5f * (float)Math.sin(now / 170.0 + i * 0.37);
+      float h = 16f + wave * 4f + level * 9f;
+      float x = startX + i * (barW + gap);
+      _voiceGlowPaint.setStyle(Paint.Style.FILL);
+      _voiceGlowPaint.setColor(interpolateVoiceBarColor(t));
+      canvas.drawRoundRect(new RectF(x, baseY - h / 2f, x + barW, baseY + h / 2f),
+          999f, 999f, _voiceGlowPaint);
+    }
+  }
+
+  private void drawVoiceFan(Canvas canvas, RectF anchor, boolean left,
+      boolean active, int color)
+  {
+    updateVoiceSlotBounds(anchor, _voiceLeftSlotBounds, _voiceRightSlotBounds);
+    RectF bounds = left ? _voiceLeftSlotBounds : _voiceRightSlotBounds;
+    _voiceGlowPaint.setStyle(Paint.Style.FILL);
+    _voiceGlowPaint.setColor(active ? color : Color.argb(88, 196, 209, 220));
+    Path slot = new Path();
+    float round = Math.min(bounds.width(), bounds.height()) * 0.22f;
+    float arcDepth = Math.max(30f, bounds.width() * 0.22f);
+    if (left)
+    {
+      slot.moveTo(bounds.left, bounds.top + bounds.height() * 0.22f);
+      slot.quadTo(bounds.left + bounds.width() * 0.1f, bounds.top,
+          bounds.left + round, bounds.top);
+      slot.lineTo(bounds.right - bounds.width() * 0.12f, bounds.top + bounds.height() * 0.08f);
+      slot.quadTo(bounds.right - arcDepth, bounds.centerY(),
+          bounds.right - bounds.width() * 0.02f, bounds.bottom - bounds.height() * 0.08f);
+      slot.lineTo(bounds.left + round, bounds.bottom);
+      slot.quadTo(bounds.left + bounds.width() * 0.08f, bounds.bottom,
+          bounds.left, bounds.bottom - bounds.height() * 0.16f);
+    }
+    else
+    {
+      slot.moveTo(bounds.right, bounds.top + bounds.height() * 0.22f);
+      slot.quadTo(bounds.right - bounds.width() * 0.1f, bounds.top,
+          bounds.right - round, bounds.top);
+      slot.lineTo(bounds.left + bounds.width() * 0.12f, bounds.top + bounds.height() * 0.08f);
+      slot.quadTo(bounds.left + arcDepth, bounds.centerY(),
+          bounds.left + bounds.width() * 0.02f, bounds.bottom - bounds.height() * 0.08f);
+      slot.lineTo(bounds.right - round, bounds.bottom);
+      slot.quadTo(bounds.right - bounds.width() * 0.08f, bounds.bottom,
+          bounds.right, bounds.bottom - bounds.height() * 0.16f);
+    }
+    slot.close();
+    canvas.drawPath(slot, _voiceGlowPaint);
+
+    _voiceSlotStrokePaint.setStyle(Paint.Style.STROKE);
+    _voiceSlotStrokePaint.setStrokeWidth(active ? 4f : 2f);
+    _voiceSlotStrokePaint.setColor(active ? Color.argb(170, 255, 255, 255) : Color.argb(72, 230, 236, 242));
+    canvas.drawPath(slot, _voiceSlotStrokePaint);
+
+    _voiceTextPaint.setTextAlign(Paint.Align.CENTER);
+    _voiceTextPaint.setTextSize(_subLabelSize * 1.24f);
+    _voiceTextPaint.setColor(Color.argb(238, 20, 24, 32));
+    float angle = left ? -10f : 10f;
+    String label = left
+      ? getResources().getString(R.string.voice_input_cancel_label)
+      : getResources().getString(R.string.voice_input_send_label);
+    canvas.save();
+    canvas.rotate(angle, bounds.centerX(), bounds.centerY());
+    canvas.drawText(label, bounds.centerX(), bounds.centerY() + _subLabelSize * 0.35f,
+        _voiceTextPaint);
+    canvas.restore();
+  }
+
+  private void updateVoiceSlotBounds(RectF anchor, RectF leftOut, RectF rightOut)
+  {
+    float slotTop = anchor.top - Math.max(_tc.row_height * 1.55f, anchor.height() * 1.45f);
+    float slotBottom = anchor.top - Math.max(_tc.row_height * 0.14f, 8f);
+    float centerGap = Math.max(getWidth() * 0.22f, anchor.width() * 0.88f);
+    float centerX = anchor.centerX();
+    leftOut.set(-getWidth() * 0.05f, slotTop, centerX - centerGap / 2f, slotBottom);
+    rightOut.set(centerX + centerGap / 2f, slotTop, getWidth() + getWidth() * 0.05f, slotBottom);
+  }
+
+  private int interpolateVoiceBarColor(float t)
+  {
+    int r = (int)(0x18 + (0x42 - 0x18) * t);
+    int g = (int)(0xCB + (0x6D - 0xCB) * t);
+    int b = (int)(0xD3 + (0xFF - 0xD3) * t);
+    return Color.argb(255, r, g, b);
   }
 }

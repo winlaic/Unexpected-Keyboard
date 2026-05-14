@@ -47,6 +47,7 @@ public class Keyboard2 extends InputMethodService
   private ViewGroup _emojiPane = null;
   private ViewGroup _clipboard_pane = null;
   private Handler _handler;
+  private VoiceInputController _voiceInputController;
 
   private Config _config;
 
@@ -126,6 +127,7 @@ public class Keyboard2 extends InputMethodService
     _config = Config.globalConfig();
     _keyeventhandler = new KeyEventHandler(this.new Receiver(), _config);
     _config.handler = _keyeventhandler;
+    _voiceInputController = new VoiceInputController(this, _handler);
     prefs.registerOnSharedPreferenceChangeListener(this);
     Logs.set_debug_logs(getResources().getBoolean(R.bool.debug_logs));
     refreshSubtypeImm();
@@ -136,6 +138,8 @@ public class Keyboard2 extends InputMethodService
 
   @Override
   public void onDestroy() {
+    if (_voiceInputController != null)
+      _voiceInputController.shutdown();
     super.onDestroy();
 
     _foldStateTracker.close();
@@ -146,6 +150,12 @@ public class Keyboard2 extends InputMethodService
     _keyboard_container_view = (ViewGroup)inflate_view(R.layout.keyboard);
     _keyboard_layout_view = (Keyboard2View)_keyboard_container_view.findViewById(R.id.keyboard_view);
     _candidates_view = (CandidatesView)_keyboard_container_view.findViewById(R.id.candidates_view);
+    _keyboard_layout_view.setVoiceInputController(_voiceInputController);
+  }
+
+  VoiceInputController getVoiceInputController()
+  {
+    return _voiceInputController;
   }
 
   InputMethodManager get_imm()
