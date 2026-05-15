@@ -171,7 +171,11 @@ final class VoiceInputController
 
   void finish(ReleaseAction action)
   {
-    if (!_overlay.visible || _finalizing)
+    if (!_overlay.visible && !_finalizing)
+      return;
+    hide_overlay();
+    request_stop_recording();
+    if (_finalizing)
       return;
     if (action == ReleaseAction.SEND
         && !VoiceInputConfig.auto_send_enabled(Config.globalPrefs()))
@@ -179,41 +183,59 @@ final class VoiceInputController
     if (action == ReleaseAction.CANCEL)
     {
       _acceptingStreamSession = false;
-      _overlay.finishing = true;
       _overlay.status = _ims.getString(R.string.voice_input_cancel);
-      notify_ui();
       run_async("voice-input-cancel", () -> {
-        stop_recording();
-        VoiceInputProvider.StreamingSession session = _streamSession;
-        if (session != null)
-          session.cancel();
-        _handler.post(() -> {
-          clear_composing_text();
-          reset_ui();
-          toast(R.string.voice_input_cancelled);
-        });
+        try
+        {
+          stop_recording();
+          VoiceInputProvider.StreamingSession session = _streamSession;
+          if (session != null)
+            session.cancel();
+        }
+        finally
+        {
+          _handler.post(() -> {
+            clear_composing_text();
+            reset_ui();
+            toast(R.string.voice_input_cancelled);
+          });
+        }
       });
       return;
     }
     _finalizing = true;
     _acceptingStreamSession = false;
-    _overlay.finishing = true;
     _overlay.status = _ims.getString(R.string.voice_input_processing);
-    notify_ui();
     final ReleaseAction releaseAction = action;
     run_async("voice-input-finalize", () -> {
-      byte[] wavData = pcm_to_wav(stop_recording());
-      String fallbackText = _liveText;
-      VoiceInputProvider.StreamingSession session = wait_for_stream_session(1500);
-      if (session != null)
-        session.finish();
-      finalize_recognition(wavData, fallbackText, releaseAction);
+      try
+      {
+        byte[] wavData = pcm_to_wav(stop_recording());
+        String fallbackText = _liveText;
+        VoiceInputProvider.StreamingSession session = wait_for_stream_session(1500);
+        if (session != null)
+        {
+          session.finish();
+          session.cancel();
+        }
+        finalize_recognition(wavData, fallbackText, releaseAction);
+      }
+      catch (Exception e)
+      {
+        Logs.exn("Voice input finalize failed", e);
+        _handler.post(() -> {
+          clear_composing_text();
+          reset_ui();
+          toast(R.string.voice_input_failed);
+        });
+      }
     });
   }
 
   void shutdown()
   {
     _acceptingStreamSession = false;
+    request_stop_recording();
     run_async("voice-input-shutdown", () -> {
       stop_recording();
       VoiceInputProvider.StreamingSession session = _streamSession;
@@ -306,14 +328,14 @@ final class VoiceInputController
   {
     _starting = false;
     _acceptingStreamSession = false;
+    hide_overlay();
+    request_stop_recording();
     run_async("voice-input-fail", () -> {
       stop_recording();
       VoiceInputProvider.StreamingSession session = _streamSession;
       if (session != null)
         session.cancel();
       _handler.post(() -> {
-        if (!_overlay.visible)
-          return;
         clear_composing_text();
         reset_ui();
         toast(R.string.voice_input_failed);
@@ -336,6 +358,20 @@ final class VoiceInputController
     _overlay.level = 0.f;
     _liveText = "";
     notify_ui();
+  }
+
+  private void hide_overlay()
+  {
+    _overlay.visible = false;
+    _overlay.finishing = true;
+    _overlay.fan = FanSelection.NONE;
+    _overlay.status = "";
+    notify_ui();
+  }
+
+  private void request_stop_recording()
+  {
+    _recording = false;
   }
 
   private void clear_composing_text()
@@ -428,6 +464,12 @@ final class VoiceInputController
     }
     Thread thread = _recordThread;
     _recordThread = null;
+    if (thread != null && thread != Thread.currentThread())
+    {
+      try { thread.join(300); } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
     byte[] pcmData;
     synchronized (_audioLock)
     {

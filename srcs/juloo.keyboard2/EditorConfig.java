@@ -42,6 +42,14 @@ public final class EditorConfig
 
   public EditorConfig() {}
 
+  public String action_label()
+  {
+    KeyValue key = enter_key_replacement != null
+      ? enter_key_replacement
+      : action_key_replacement;
+    return key == null ? null : key.getString();
+  }
+
   public void refresh(EditorInfo info, Resources res)
   {
     int inputType = info.inputType & InputType.TYPE_MASK_CLASS;

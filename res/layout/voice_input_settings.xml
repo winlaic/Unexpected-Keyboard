@@ -48,6 +48,20 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="20dp"
+        android:text="@string/voice_input_trigger_delay_title"/>
+    <TextView
+        android:id="@+id/voice_input_trigger_delay_value"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"/>
+    <SeekBar
+        android:id="@+id/voice_input_trigger_delay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
         android:text="@string/voice_input_permission_title"/>
     <TextView
         android:id="@+id/voice_input_permission_status"

@@ -2,13 +2,17 @@ package juloo.keyboard2;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.graphics.Bitmap;
+import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build.VERSION;
 import android.os.Handler;
@@ -46,6 +50,11 @@ public class Keyboard2View extends View
   private float _voiceDownX = 0.f;
   private float _voiceDownY = 0.f;
   private boolean _voiceGestureActive = false;
+  private VoiceInputController.FanSelection _voiceAnimatedFan =
+    VoiceInputController.FanSelection.NONE;
+  private VoiceInputController.FanSelection _voicePreviousFan =
+    VoiceInputController.FanSelection.NONE;
+  private long _voiceFanChangedAtMs = 0L;
   private VoiceInputController.FanSelection _voiceFan =
     VoiceInputController.FanSelection.NONE;
   private final RectF _voiceAnchorRect = new RectF();
@@ -57,6 +66,25 @@ public class Keyboard2View extends View
   private final Paint _voiceSlotStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final RectF _voiceLeftSlotBounds = new RectF();
   private final RectF _voiceRightSlotBounds = new RectF();
+  private final RectF _voiceKeyboardBounds = new RectF();
+  private Bitmap _voiceBlurBitmap = null;
+  private long _voiceBlurStartedAtMs = -1L;
+  private static final float VOICE_DESIGN_WIDTH = 412.f;
+  private static final float VOICE_DESIGN_SPACE_LEFT = 117.f;
+  private static final float VOICE_DESIGN_SPACE_TOP = 296.f;
+  private static final float VOICE_DESIGN_SPACE_WIDTH = 177.f;
+  private static final float VOICE_DESIGN_SPACE_HEIGHT = 46.f;
+  private static final float VOICE_PREVIEW_CENTER_OFFSET_X =
+    40.f + 325.f / 2.f - (VOICE_DESIGN_SPACE_LEFT + VOICE_DESIGN_SPACE_WIDTH / 2.f);
+  private static final float VOICE_PREVIEW_TOP_OFFSET =
+    VOICE_DESIGN_SPACE_TOP - 40.f;
+  private static final float VOICE_PREVIEW_SAFE_TOP = 22.f;
+  private static final float VOICE_PREVIEW_WIDTH = 325.f;
+  private static final float VOICE_PREVIEW_HEIGHT = 59.f;
+  private static final float VOICE_SLOT_TOP_OFFSET =
+    VOICE_DESIGN_SPACE_TOP - 129.f;
+  private static final float VOICE_SLOT_WIDTH = 186.f;
+  private static final float VOICE_SLOT_HEIGHT = 107.f;
   private final Runnable _voiceLongPressRunnable = new Runnable() {
     @Override
     public void run()
@@ -252,11 +280,20 @@ public class Keyboard2View extends View
   {
     int p;
     if (_voiceInputController != null
-        && _voiceInputController.get_overlay_state().visible
-        && !_voiceGestureActive)
+        && _voiceInputController.get_overlay_state().visible)
+    {
+      if (_voiceGestureActive)
+      {
+        if (handleVoiceGesture(event))
+          return true;
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN)
+        {
+          _voiceInputController.finish(VoiceInputController.ReleaseAction.CANCEL);
+          finishVoiceGestureState();
+        }
+      }
       return true;
-    if (_voiceGestureActive && handleVoiceGesture(event))
-      return true;
+    }
     switch (event.getActionMasked())
     {
       case MotionEvent.ACTION_UP:
@@ -431,6 +468,17 @@ public class Keyboard2View extends View
   @Override
   protected void onDraw(Canvas canvas)
   {
+    VoiceInputController.OverlayState voiceState =
+      (_voiceInputController == null) ? null : _voiceInputController.get_overlay_state();
+    if (voiceState != null && voiceState.visible)
+      drawVoiceBlurredKeyboard(canvas, voiceState);
+    else
+      drawKeyboardContent(canvas);
+    drawVoiceOverlay(canvas);
+  }
+
+  private void drawKeyboardContent(Canvas canvas)
+  {
     float y = _tc.margin_top;
     for (KeyboardData.Row row : _keyboard.rows)
     {
@@ -456,7 +504,6 @@ public class Keyboard2View extends View
       }
       y += row.height * _tc.row_height;
     }
-    drawVoiceOverlay(canvas);
   }
 
   @Override
@@ -588,7 +635,7 @@ public class Keyboard2View extends View
     _voiceDownX = x;
     _voiceDownY = y;
     _voiceGestureHandler.postDelayed(_voiceLongPressRunnable,
-        _config.longPressTimeout);
+        VoiceInputConfig.get_trigger_delay_ms(Config.globalPrefs()));
   }
 
   private boolean shouldInterceptVoiceSpace(int pointerId, float x, float y,
@@ -634,6 +681,11 @@ public class Keyboard2View extends View
         {
           _voiceFan = detectVoiceFan(event.getX(idx), event.getY(idx));
           _voiceInputController.update_fan(_voiceFan);
+        }
+        else
+        {
+          _voiceInputController.finish(VoiceInputController.ReleaseAction.CANCEL);
+          finishVoiceGestureState();
         }
         invalidate();
         return true;
@@ -728,47 +780,44 @@ public class Keyboard2View extends View
     if (!state.visible)
       return;
 
+    updateVoiceFanAnimation(state.fan);
     long now = SystemClock.uptimeMillis();
-    float pulse = 0.5f + 0.5f * (float)Math.sin((now - state.startedAtMs) / 220.0);
-    float panelHeight = Math.max(state.anchor.height() * 3.5f, _tc.row_height * 4.2f);
-    float panelBottom = Math.max(20.f, state.anchor.top - _tc.vertical_margin * 0.4f);
-    float panelTop = Math.max(0.f, panelBottom - panelHeight);
-    RectF panel = new RectF(0.f, panelTop, getWidth(), panelBottom);
+    float xScale = getWidth() / VOICE_DESIGN_WIDTH;
+    float scale = xScale;
 
-    _voiceGlowPaint.setStyle(Paint.Style.FILL);
-    _voiceGlowPaint.setColor(Color.argb(22, 156, 216, 255));
-    canvas.drawOval(new RectF(panel.left + panel.width() * 0.04f,
-        panel.top + panel.height() * 0.20f, panel.right - panel.width() * 0.04f,
-        panel.bottom + panel.height() * 0.18f), _voiceGlowPaint);
-    _voiceGlowPaint.setColor(Color.argb(18, 186, 238, 255));
-    canvas.drawOval(new RectF(panel.left + panel.width() * 0.18f,
-        panel.top + panel.height() * 0.10f, panel.right - panel.width() * 0.18f,
-        panel.bottom + panel.height() * 0.04f), _voiceGlowPaint);
+    _voiceKeyboardBounds.set(0.f, 0.f, getWidth(), getHeight());
 
-    drawVoiceLevel(canvas, panel, state.level, pulse, now);
+    _voicePanelPaint.setStyle(Paint.Style.FILL);
+    _voicePanelPaint.setColor(Color.argb(115, 217, 217, 217));
+    canvas.drawRect(_voiceKeyboardBounds, _voicePanelPaint);
 
-    drawVoiceFan(canvas, state.anchor, true,
+    updateVoiceSlotBounds(state.anchor, _voiceLeftSlotBounds, _voiceRightSlotBounds);
+    drawVoiceFan(canvas, _voiceLeftSlotBounds, true,
         state.fan == VoiceInputController.FanSelection.CANCEL,
-        Color.argb(220, 255, 101, 101));
-    drawVoiceFan(canvas, state.anchor, false,
+        Color.rgb(218, 92, 98), now);
+    drawVoiceFan(canvas, _voiceRightSlotBounds, false,
         state.fan == VoiceInputController.FanSelection.SEND,
-        Color.argb(220, 92, 171, 255));
+        Color.rgb(74, 164, 190), now);
 
-    _voiceTextPaint.setColor(Color.argb(246, 18, 24, 32));
+    RectF preview = voicePreviewBounds(state.anchor);
+    drawVoiceSpaceMask(canvas, state.anchor);
+
+    _voiceTextPaint.setColor(Color.argb(242, 58, 66, 76));
     _voiceTextPaint.setTextAlign(Paint.Align.CENTER);
-    _voiceTextPaint.setTextSize(_mainLabelSize * 0.84f);
+    _voiceTextPaint.setTextSize(Math.min(_mainLabelSize * 0.84f,
+        preview.height() * 0.34f));
+    _voiceTextPaint.setShadowLayer(6.f * scale, 0.f, 1.f * scale,
+        Color.argb(120, 255, 255, 255));
     String transcript = state.transcript.equals("")
       ? getResources().getString(R.string.voice_input_listening)
       : state.transcript;
     int maxLen = Math.min(28, transcript.length());
-    canvas.drawText(transcript, 0, maxLen, panel.centerX(),
-        panelTop + panel.height() * 0.40f, _voiceTextPaint);
-
-    _voiceHintPaint.setColor(Color.argb(120, 86, 96, 108));
-    _voiceHintPaint.setTextAlign(Paint.Align.CENTER);
-    _voiceHintPaint.setTextSize(_subLabelSize * 1.18f);
-    canvas.drawText(state.status, panel.centerX(),
-        panelBottom - panel.height() * 0.14f, _voiceHintPaint);
+    float textY = Math.max(preview.centerY(),
+        preview.top + _voiceTextPaint.getTextSize() * 1.45f);
+    canvas.drawText(transcript, 0, maxLen, preview.centerX(),
+        textY - (_voiceTextPaint.ascent() + _voiceTextPaint.descent()) / 2.f,
+        _voiceTextPaint);
+    _voiceTextPaint.clearShadowLayer();
 
     postInvalidateOnAnimation();
   }
@@ -794,70 +843,211 @@ public class Keyboard2View extends View
     }
   }
 
-  private void drawVoiceFan(Canvas canvas, RectF anchor, boolean left,
-      boolean active, int color)
+  private void drawVoiceFan(Canvas canvas, RectF bounds, boolean left,
+      boolean active, int color, long now)
   {
-    updateVoiceSlotBounds(anchor, _voiceLeftSlotBounds, _voiceRightSlotBounds);
-    RectF bounds = left ? _voiceLeftSlotBounds : _voiceRightSlotBounds;
-    _voiceGlowPaint.setStyle(Paint.Style.FILL);
-    _voiceGlowPaint.setColor(active ? color : Color.argb(88, 196, 209, 220));
     Path slot = new Path();
-    float round = Math.min(bounds.width(), bounds.height()) * 0.22f;
-    float arcDepth = Math.max(30f, bounds.width() * 0.22f);
     if (left)
     {
-      slot.moveTo(bounds.left, bounds.top + bounds.height() * 0.22f);
-      slot.quadTo(bounds.left + bounds.width() * 0.1f, bounds.top,
-          bounds.left + round, bounds.top);
-      slot.lineTo(bounds.right - bounds.width() * 0.12f, bounds.top + bounds.height() * 0.08f);
-      slot.quadTo(bounds.right - arcDepth, bounds.centerY(),
-          bounds.right - bounds.width() * 0.02f, bounds.bottom - bounds.height() * 0.08f);
-      slot.lineTo(bounds.left + round, bounds.bottom);
-      slot.quadTo(bounds.left + bounds.width() * 0.08f, bounds.bottom,
-          bounds.left, bounds.bottom - bounds.height() * 0.16f);
+      float r = bounds.width() / 2.f;
+      slot.addRoundRect(bounds,
+          new float[]{ 0.f, 0.f, r, r, r, r, 0.f, 0.f },
+          Path.Direction.CW);
     }
     else
     {
-      slot.moveTo(bounds.right, bounds.top + bounds.height() * 0.22f);
-      slot.quadTo(bounds.right - bounds.width() * 0.1f, bounds.top,
-          bounds.right - round, bounds.top);
-      slot.lineTo(bounds.left + bounds.width() * 0.12f, bounds.top + bounds.height() * 0.08f);
-      slot.quadTo(bounds.left + arcDepth, bounds.centerY(),
-          bounds.left + bounds.width() * 0.02f, bounds.bottom - bounds.height() * 0.08f);
-      slot.lineTo(bounds.right - round, bounds.bottom);
-      slot.quadTo(bounds.right - bounds.width() * 0.08f, bounds.bottom,
-          bounds.right, bounds.bottom - bounds.height() * 0.16f);
+      float r = bounds.width() / 2.f;
+      slot.addRoundRect(bounds,
+          new float[]{ r, r, 0.f, 0.f, 0.f, 0.f, r, r },
+          Path.Direction.CW);
     }
-    slot.close();
+    float activation = voiceFanActivation(left, active, now);
+    if (activation > 0.f)
+    {
+      float scale = getWidth() / VOICE_DESIGN_WIDTH;
+      _voiceGlowPaint.setStyle(Paint.Style.FILL);
+      _voiceGlowPaint.setColor(withAlpha(color, (int)(150 * activation)));
+      _voiceGlowPaint.setMaskFilter(new BlurMaskFilter((22.f + 16.f * activation) * scale,
+          BlurMaskFilter.Blur.NORMAL));
+      canvas.drawPath(slot, _voiceGlowPaint);
+      _voiceGlowPaint.setMaskFilter(null);
+    }
+    _voiceGlowPaint.setStyle(Paint.Style.FILL);
+    _voiceGlowPaint.setColor(withAlpha(color, (int)(86 + 76 * activation)));
     canvas.drawPath(slot, _voiceGlowPaint);
 
-    _voiceSlotStrokePaint.setStyle(Paint.Style.STROKE);
-    _voiceSlotStrokePaint.setStrokeWidth(active ? 4f : 2f);
-    _voiceSlotStrokePaint.setColor(active ? Color.argb(170, 255, 255, 255) : Color.argb(72, 230, 236, 242));
-    canvas.drawPath(slot, _voiceSlotStrokePaint);
-
+    float scale = getWidth() / VOICE_DESIGN_WIDTH;
     _voiceTextPaint.setTextAlign(Paint.Align.CENTER);
-    _voiceTextPaint.setTextSize(_subLabelSize * 1.24f);
-    _voiceTextPaint.setColor(Color.argb(238, 20, 24, 32));
-    float angle = left ? -10f : 10f;
-    String label = left
-      ? getResources().getString(R.string.voice_input_cancel_label)
-      : getResources().getString(R.string.voice_input_send_label);
-    canvas.save();
-    canvas.rotate(angle, bounds.centerX(), bounds.centerY());
-    canvas.drawText(label, bounds.centerX(), bounds.centerY() + _subLabelSize * 0.35f,
+    _voiceTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
+    _voiceTextPaint.setTextSize(Math.min(_subLabelSize * 1.55f, bounds.height() * 0.28f));
+    _voiceTextPaint.setColor(left
+        ? Color.argb(active ? 238 : 216, 112, 48, 54)
+        : Color.argb(active ? 238 : 216, 38, 92, 110));
+    _voiceTextPaint.setShadowLayer(3.f * scale, 0.f, 1.f * scale,
+        Color.argb(72, 255, 255, 255));
+    String label = left ? "Cancel" : voiceSubmitLabel();
+    float labelX = left
+      ? bounds.left + bounds.width() * 0.43f
+      : bounds.right - bounds.width() * 0.43f;
+    canvas.drawText(label, labelX,
+        bounds.centerY() - (_voiceTextPaint.ascent() + _voiceTextPaint.descent()) / 2.f,
         _voiceTextPaint);
-    canvas.restore();
+    _voiceTextPaint.clearShadowLayer();
+    _voiceTextPaint.setTypeface(Typeface.DEFAULT);
+  }
+
+  private String voiceSubmitLabel()
+  {
+    String label = _config.editor_config.action_label();
+    if (label == null || label.equals(""))
+      return "Enter";
+    return label;
+  }
+
+  private void updateVoiceFanAnimation(VoiceInputController.FanSelection fan)
+  {
+    if (_voiceAnimatedFan == fan)
+      return;
+    _voicePreviousFan = _voiceAnimatedFan;
+    _voiceAnimatedFan = fan;
+    _voiceFanChangedAtMs = SystemClock.uptimeMillis();
+  }
+
+  private float voiceFanActivation(boolean left, boolean active, long now)
+  {
+    boolean isAnimatedFan = (left
+        && _voiceAnimatedFan == VoiceInputController.FanSelection.CANCEL)
+      || (!left && _voiceAnimatedFan == VoiceInputController.FanSelection.SEND);
+    boolean wasPreviousFan = (left
+        && _voicePreviousFan == VoiceInputController.FanSelection.CANCEL)
+      || (!left && _voicePreviousFan == VoiceInputController.FanSelection.SEND);
+    float t = Math.min(1.f, (now - _voiceFanChangedAtMs) / 160.f);
+    t = t * t * (3.f - 2.f * t);
+    if (isAnimatedFan)
+      return t;
+    return wasPreviousFan ? 1.f - t : 0.f;
+  }
+
+  private void drawVoiceBlurredKeyboard(Canvas canvas,
+      VoiceInputController.OverlayState state)
+  {
+    int w = Math.max(1, getWidth() / 4);
+    int h = Math.max(1, getHeight() / 4);
+    if (_voiceBlurBitmap == null
+        || _voiceBlurBitmap.getWidth() != w
+        || _voiceBlurBitmap.getHeight() != h
+        || _voiceBlurStartedAtMs != state.startedAtMs)
+    {
+      _voiceBlurBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+      Canvas blurCanvas = new Canvas(_voiceBlurBitmap);
+      blurCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+      blurCanvas.scale(w / (float)getWidth(), h / (float)getHeight());
+      drawKeyboardContent(blurCanvas);
+      blurBitmap(_voiceBlurBitmap, 6);
+      blurBitmap(_voiceBlurBitmap, 6);
+      _voiceBlurStartedAtMs = state.startedAtMs;
+    }
+    canvas.drawBitmap(_voiceBlurBitmap, null,
+        new RectF(0.f, 0.f, getWidth(), getHeight()), null);
+  }
+
+  private void blurBitmap(Bitmap bitmap, int radius)
+  {
+    int w = bitmap.getWidth();
+    int h = bitmap.getHeight();
+    if (radius < 1 || w < 2 || h < 2)
+      return;
+    int[] src = new int[w * h];
+    int[] tmp = new int[w * h];
+    bitmap.getPixels(src, 0, w, 0, 0, w, h);
+    blurHorizontal(src, tmp, w, h, radius);
+    blurVertical(tmp, src, w, h, radius);
+    bitmap.setPixels(src, 0, w, 0, 0, w, h);
+  }
+
+  private void blurHorizontal(int[] src, int[] dst, int w, int h, int radius)
+  {
+    int window = radius * 2 + 1;
+    for (int y = 0; y < h; y++)
+    {
+      int row = y * w;
+      for (int x = 0; x < w; x++)
+      {
+        int a = 0, r = 0, g = 0, b = 0;
+        for (int i = -radius; i <= radius; i++)
+        {
+          int px = Math.max(0, Math.min(w - 1, x + i));
+          int c = src[row + px];
+          a += Color.alpha(c);
+          r += Color.red(c);
+          g += Color.green(c);
+          b += Color.blue(c);
+        }
+        dst[row + x] = Color.argb(a / window, r / window, g / window, b / window);
+      }
+    }
+  }
+
+  private void blurVertical(int[] src, int[] dst, int w, int h, int radius)
+  {
+    int window = radius * 2 + 1;
+    for (int y = 0; y < h; y++)
+    {
+      for (int x = 0; x < w; x++)
+      {
+        int a = 0, r = 0, g = 0, b = 0;
+        for (int i = -radius; i <= radius; i++)
+        {
+          int py = Math.max(0, Math.min(h - 1, y + i));
+          int c = src[py * w + x];
+          a += Color.alpha(c);
+          r += Color.red(c);
+          g += Color.green(c);
+          b += Color.blue(c);
+        }
+        dst[y * w + x] = Color.argb(a / window, r / window, g / window, b / window);
+      }
+    }
+  }
+
+  private void drawVoiceSpaceMask(Canvas canvas, RectF bounds)
+  {
+    float w = _tc.key.border_width;
+    float padding = w / 2.f;
+    _tmpRect.set(bounds.left + padding, bounds.top + padding,
+        bounds.right - padding, bounds.bottom - padding);
+    _voicePanelPaint.setStyle(Paint.Style.FILL);
+    _voicePanelPaint.setColor(Color.rgb(217, 217, 217));
+    canvas.drawRoundRect(_tmpRect, _tc.key.border_radius, _tc.key.border_radius,
+        _voicePanelPaint);
   }
 
   private void updateVoiceSlotBounds(RectF anchor, RectF leftOut, RectF rightOut)
   {
-    float slotTop = anchor.top - Math.max(_tc.row_height * 1.55f, anchor.height() * 1.45f);
-    float slotBottom = anchor.top - Math.max(_tc.row_height * 0.14f, 8f);
-    float centerGap = Math.max(getWidth() * 0.22f, anchor.width() * 0.88f);
-    float centerX = anchor.centerX();
-    leftOut.set(-getWidth() * 0.05f, slotTop, centerX - centerGap / 2f, slotBottom);
-    rightOut.set(centerX + centerGap / 2f, slotTop, getWidth() + getWidth() * 0.05f, slotBottom);
+    float xScale = getWidth() / VOICE_DESIGN_WIDTH;
+    float slotTop = anchor.top - VOICE_SLOT_TOP_OFFSET * xScale;
+    float slotHeight = VOICE_SLOT_HEIGHT * xScale;
+    float slotBottom = slotTop + slotHeight;
+    float slotWidth = VOICE_SLOT_WIDTH * xScale;
+    leftOut.set(0.f, slotTop, slotWidth, slotBottom);
+    rightOut.set(getWidth() - slotWidth, slotTop, getWidth(), slotBottom);
+  }
+
+  private RectF voicePreviewBounds(RectF anchor)
+  {
+    float xScale = getWidth() / VOICE_DESIGN_WIDTH;
+    float previewWidth = VOICE_PREVIEW_WIDTH * xScale;
+    float previewHeight = VOICE_PREVIEW_HEIGHT * xScale;
+    float centerX = anchor.centerX() + VOICE_PREVIEW_CENTER_OFFSET_X * xScale;
+    float top = Math.max(VOICE_PREVIEW_SAFE_TOP * xScale,
+        anchor.top - VOICE_PREVIEW_TOP_OFFSET * xScale);
+    return new RectF(centerX - previewWidth / 2.f, top,
+        centerX + previewWidth / 2.f, top + previewHeight);
+  }
+
+  private int withAlpha(int color, int alpha)
+  {
+    return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
   }
 
   private int interpolateVoiceBarColor(float t)

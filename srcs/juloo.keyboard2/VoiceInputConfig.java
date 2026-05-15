@@ -8,6 +8,11 @@ final class VoiceInputConfig
   static final String PREF_API_KEY = "voice_input_api_key";
   static final String PREF_STREAMING_MODEL = "voice_input_streaming_model";
   static final String PREF_AUTO_SEND = "voice_input_auto_send";
+  static final String PREF_TRIGGER_DELAY_MS = "voice_input_trigger_delay_ms";
+  static final int DEFAULT_TRIGGER_DELAY_MS = 500;
+  static final int MIN_TRIGGER_DELAY_MS = 200;
+  static final int MAX_TRIGGER_DELAY_MS = 1500;
+  static final int TRIGGER_DELAY_STEP_MS = 50;
 
   static final String MODEL_DOUBAO_V1 = "doubao_asr_v1";
   static final String MODEL_DOUBAO_V2 = "doubao_asr_v2";
@@ -47,5 +52,15 @@ final class VoiceInputConfig
   static boolean auto_send_enabled(SharedPreferences prefs)
   {
     return prefs.getBoolean(PREF_AUTO_SEND, true);
+  }
+
+  static int get_trigger_delay_ms(SharedPreferences prefs)
+  {
+    int delay = prefs.getInt(PREF_TRIGGER_DELAY_MS, DEFAULT_TRIGGER_DELAY_MS);
+    if (delay < MIN_TRIGGER_DELAY_MS)
+      return MIN_TRIGGER_DELAY_MS;
+    if (delay > MAX_TRIGGER_DELAY_MS)
+      return MAX_TRIGGER_DELAY_MS;
+    return delay;
   }
 }
