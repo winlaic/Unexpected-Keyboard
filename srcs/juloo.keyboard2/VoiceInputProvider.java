@@ -4,7 +4,6 @@ interface VoiceInputProvider
 {
   StreamingSession start_streaming(Listener listener) throws Exception;
   OfflineSession start_offline_recognition() throws Exception;
-  String recognize_once(byte[] wavData) throws Exception;
 
   interface Listener
   {

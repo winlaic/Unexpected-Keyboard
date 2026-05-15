@@ -75,49 +75,6 @@ final class VolcengineVoiceProvider implements VoiceInputProvider
   }
 
   @Override
-  public String recognize_once(byte[] wavData) throws Exception
-  {
-    HttpURLConnection conn = (HttpURLConnection)new URL(OFFLINE_URL).openConnection();
-    conn.setRequestMethod("POST");
-    conn.setConnectTimeout(15000);
-    conn.setReadTimeout(45000);
-    conn.setDoOutput(true);
-    conn.setRequestProperty("Content-Type", "application/json");
-    conn.setRequestProperty("X-Api-Key", VoiceInputConfig.get_api_key(_prefs));
-    conn.setRequestProperty("X-Api-Resource-Id", OFFLINE_RESOURCE);
-    conn.setRequestProperty("X-Api-Request-Id", UUID.randomUUID().toString());
-    conn.setRequestProperty("X-Api-Sequence", "-1");
-
-    JSONObject body = new JSONObject();
-    body.put("user", new JSONObject().put("uid", get_or_create_uid()));
-    body.put("audio", new JSONObject()
-        .put("format", "wav")
-        .put("data", Base64.encodeToString(wavData, Base64.NO_WRAP))
-        .put("rate", SAMPLE_RATE)
-        .put("bits", 16)
-        .put("channel", 1));
-    body.put("request", new JSONObject()
-        .put("model_name", "bigmodel")
-        .put("enable_itn", true)
-        .put("enable_punc", true));
-    byte[] payload = body.toString().getBytes("UTF-8");
-    OutputStream out = conn.getOutputStream();
-    out.write(payload);
-    out.close();
-
-    int httpCode = conn.getResponseCode();
-    String apiStatus = conn.getHeaderField("X-Api-Status-Code");
-    String response = Utils.read_all_utf8(httpCode >= 400
-        ? conn.getErrorStream()
-        : conn.getInputStream());
-    if (httpCode != 200)
-      throw new RuntimeException("HTTP " + httpCode + ": " + response);
-    if (apiStatus != null && !apiStatus.equals("20000000"))
-      throw new RuntimeException("API " + apiStatus + ": " + response);
-    return parse_result_text(new JSONObject(response)).trim();
-  }
-
-  @Override
   public VoiceInputProvider.OfflineSession start_offline_recognition()
       throws Exception
   {

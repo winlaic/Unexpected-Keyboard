@@ -13,7 +13,6 @@ import android.os.Handler;
 import android.view.inputmethod.InputConnection;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 
 final class VoiceInputController
 {
@@ -227,7 +226,6 @@ final class VoiceInputController
           wait_for_offline_session(600);
         _acceptingOfflineSession = false;
         feed_offline_tail(offlineSession, pcmData);
-        byte[] wavData = pcm_to_wav(pcmData);
         String fallbackText = _liveText;
         VoiceInputProvider.StreamingSession session = wait_for_stream_session(1500);
         if (session != null)
@@ -235,7 +233,7 @@ final class VoiceInputController
           session.finish();
           session.cancel();
         }
-        finalize_recognition(offlineSession, wavData, fallbackText, releaseAction);
+        finalize_recognition(offlineSession, fallbackText, releaseAction);
       }
       catch (Exception e)
       {
@@ -266,7 +264,7 @@ final class VoiceInputController
   }
 
   private void finalize_recognition(VoiceInputProvider.OfflineSession offlineSession,
-      byte[] wavData, String fallbackText, ReleaseAction action)
+      String fallbackText, ReleaseAction action)
   {
     try
     {
@@ -287,12 +285,6 @@ final class VoiceInputController
         {
           Logs.exn("Voice input Ogg refine failed", e);
         }
-      }
-      if (wavData != null && wavData.length > 44)
-      {
-        String refined = _provider.recognize_once(wavData).trim();
-        if (!refined.equals(""))
-          finalText = refined;
       }
       final String committed = finalText;
       _handler.post(() -> commit_final_text(committed, action));
@@ -638,54 +630,6 @@ final class VoiceInputController
     byte[] out = new byte[length];
     System.arraycopy(src, offset, out, 0, length);
     return out;
-  }
-
-  private byte[] pcm_to_wav(byte[] pcmData)
-  {
-    if (pcmData == null)
-      return null;
-    try
-    {
-      ByteArrayOutputStream out = new ByteArrayOutputStream();
-      DataOutputStream data = new DataOutputStream(out);
-      int dataLength = pcmData.length;
-      int byteRate = SAMPLE_RATE * 2;
-      data.writeBytes("RIFF");
-      write_int_le(data, 36 + dataLength);
-      data.writeBytes("WAVE");
-      data.writeBytes("fmt ");
-      write_int_le(data, 16);
-      write_short_le(data, (short)1);
-      write_short_le(data, (short)1);
-      write_int_le(data, SAMPLE_RATE);
-      write_int_le(data, byteRate);
-      write_short_le(data, (short)2);
-      write_short_le(data, (short)16);
-      data.writeBytes("data");
-      write_int_le(data, dataLength);
-      data.write(pcmData);
-      data.flush();
-      return out.toByteArray();
-    }
-    catch (Exception e)
-    {
-      Logs.exn("WAV conversion failed", e);
-      return null;
-    }
-  }
-
-  private void write_int_le(DataOutputStream out, int value) throws Exception
-  {
-    out.writeByte(value & 0xff);
-    out.writeByte((value >> 8) & 0xff);
-    out.writeByte((value >> 16) & 0xff);
-    out.writeByte((value >> 24) & 0xff);
-  }
-
-  private void write_short_le(DataOutputStream out, short value) throws Exception
-  {
-    out.writeByte(value & 0xff);
-    out.writeByte((value >> 8) & 0xff);
   }
 
   private boolean has_record_audio_permission()
