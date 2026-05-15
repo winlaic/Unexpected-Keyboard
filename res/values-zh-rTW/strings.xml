@@ -174,7 +174,6 @@
     <string name="voice_input_model_title">即時辨識模型</string>
     <string name="voice_input_model_v1">豆包 ASR 1.0</string>
     <string name="voice_input_model_v2">豆包 ASR 2.0</string>
-    <string name="voice_input_auto_send_title">右側區域自動送出</string>
     <string name="voice_input_trigger_delay_title">觸發語音輸入前的長按延遲</string>
     <string name="voice_input_trigger_delay_value">%d 毫秒</string>
     <string name="voice_input_offline_chunk_title">離線上傳分塊大小</string>

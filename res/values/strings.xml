@@ -161,7 +161,6 @@
     <string name="voice_input_model_title">Streaming model</string>
     <string name="voice_input_model_v1">Doubao ASR 1.0</string>
     <string name="voice_input_model_v2">Doubao ASR 2.0</string>
-    <string name="voice_input_auto_send_title">Right fan auto-send</string>
     <string name="voice_input_trigger_delay_title">Hold delay before voice input</string>
     <string name="voice_input_trigger_delay_value">%d ms</string>
     <string name="voice_input_offline_chunk_title">Offline upload chunk</string>

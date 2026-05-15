@@ -38,12 +38,6 @@
         android:id="@+id/voice_input_model"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"/>
-    <CheckBox
-        android:id="@+id/voice_input_auto_send"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/voice_input_auto_send_title"/>
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

@@ -26,7 +26,6 @@ public class VoiceInputSettingsActivity extends Activity
   private CheckBox _enabled;
   private EditText _apiKey;
   private Spinner _model;
-  private CheckBox _autoSend;
   private SeekBar _triggerDelay;
   private TextView _triggerDelayValue;
   private TextView _permissionStatus;
@@ -42,7 +41,6 @@ public class VoiceInputSettingsActivity extends Activity
     _enabled = (CheckBox)findViewById(R.id.voice_input_enabled);
     _apiKey = (EditText)findViewById(R.id.voice_input_api_key);
     _model = (Spinner)findViewById(R.id.voice_input_model);
-    _autoSend = (CheckBox)findViewById(R.id.voice_input_auto_send);
     _triggerDelay = (SeekBar)findViewById(R.id.voice_input_trigger_delay);
     _triggerDelayValue = (TextView)findViewById(R.id.voice_input_trigger_delay_value);
     _permissionStatus = (TextView)findViewById(R.id.voice_input_permission_status);
@@ -60,7 +58,6 @@ public class VoiceInputSettingsActivity extends Activity
     SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
     _enabled.setChecked(VoiceInputConfig.is_enabled(prefs));
     _apiKey.setText(VoiceInputConfig.get_api_key(prefs));
-    _autoSend.setChecked(VoiceInputConfig.auto_send_enabled(prefs));
     _model.setSelection(VoiceInputConfig.MODEL_DOUBAO_V1.equals(
           VoiceInputConfig.get_streaming_model(prefs)) ? 0 : 1);
     _triggerDelay.setMax((VoiceInputConfig.MAX_TRIGGER_DELAY_MS
@@ -95,8 +92,6 @@ public class VoiceInputSettingsActivity extends Activity
   {
     _enabled.setOnCheckedChangeListener((button, checked) ->
         saveBoolean(VoiceInputConfig.PREF_ENABLED, checked));
-    _autoSend.setOnCheckedChangeListener((button, checked) ->
-        saveBoolean(VoiceInputConfig.PREF_AUTO_SEND, checked));
     _model.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
       @Override
       public void onItemSelected(AdapterView<?> parent, View view, int position, long id)

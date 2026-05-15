@@ -152,13 +152,6 @@ private fun VoiceInputSettingsScreen(
             prefs.edit().putString(VoiceInputConfig.PREF_STREAMING_MODEL, it).apply()
             save()
           }
-          DividerInset()
-          val autoSend = rememberBool(prefs, VoiceInputConfig.PREF_AUTO_SEND, VoiceInputConfig.auto_send_enabled(prefs))
-          SwitchRow(stringResource(R.string.voice_input_auto_send_title), checked = autoSend.value) {
-            autoSend.value = it
-            prefs.edit().putBoolean(VoiceInputConfig.PREF_AUTO_SEND, it).apply()
-            save()
-          }
         }
       }
       item { SectionHeader(stringResource(R.string.voice_input_trigger_delay_title)) }

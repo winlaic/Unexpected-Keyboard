@@ -185,9 +185,6 @@ final class VoiceInputController
     request_stop_recording();
     if (_finalizing)
       return;
-    if (action == ReleaseAction.SEND
-        && !VoiceInputConfig.auto_send_enabled(Config.globalPrefs()))
-      action = ReleaseAction.COMMIT;
     if (action == ReleaseAction.CANCEL)
     {
       VoiceInputProvider.StreamingSession session;
