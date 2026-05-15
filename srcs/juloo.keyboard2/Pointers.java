@@ -414,7 +414,10 @@ public final class Pointers implements Handler.Callback
   {
     int what = (uniqueTimeoutWhat++);
     ptr.timeoutWhat = what;
-    _longpress_handler.sendEmptyMessageDelayed(what, _config.longPressTimeout);
+    long timeout = _handler.getLongPressTimeout(ptr.key, ptr.value);
+    if (timeout <= 0)
+      timeout = _config.longPressTimeout;
+    _longpress_handler.sendEmptyMessageDelayed(what, timeout);
   }
 
   private void stopLongPress(Pointer ptr)
@@ -431,6 +434,13 @@ public final class Pointers implements Handler.Callback
   /** A pointer is long pressing. */
   private void handleLongPress(Pointer ptr)
   {
+    if (_handler.onPointerLongPress(ptr.key, ptr.value, ptr.modifiers,
+          ptr.pointerId))
+    {
+      clear();
+      _handler.onPointerFlagsChanged(true);
+      return;
+    }
     // Long press toggle lock on modifiers
     if ((ptr.flags & FLAG_P_LATCHABLE) != 0)
     {
@@ -807,6 +817,9 @@ public final class Pointers implements Handler.Callback
     /** Key can be modified or removed by returning [null]. */
     public KeyValue modifyKey(KeyValue k, Modifiers mods);
 
+    /** Return a custom long-press timeout in ms, or <= 0 to use the default. */
+    public long getLongPressTimeout(KeyboardData.Key key, KeyValue value);
+
     /** A key is pressed. [getModifiers()] is uptodate. Might be called after a
         press or a swipe to a different value. Down events are not paired with
         up events. */
@@ -818,6 +831,10 @@ public final class Pointers implements Handler.Callback
 
     /** Flags changed because latched or locked keys or cancelled pointers. */
     public void onPointerFlagsChanged(boolean shouldVibrate);
+
+    /** A key long-press was consumed by custom handling. */
+    public boolean onPointerLongPress(KeyboardData.Key key, KeyValue value,
+        Modifiers mods, int pointerId);
 
     /** Key is repeating. */
     public void onPointerHold(KeyValue k, Modifiers mods);

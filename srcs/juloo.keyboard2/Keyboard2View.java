@@ -8,13 +8,11 @@ import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build.VERSION;
-import android.os.Handler;
 import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
@@ -22,8 +20,6 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
-import android.view.WindowManager;
-import android.view.WindowMetrics;
 import java.util.Arrays;
 import java.util.List;
 
@@ -43,11 +39,7 @@ public class Keyboard2View extends View
 
   private Pointers.Modifiers _mods;
   private VoiceInputController _voiceInputController;
-  private Handler _voiceGestureHandler = new Handler();
   private int _voicePointerId = -1;
-  private KeyboardData.Key _voicePendingKey = null;
-  private float _voiceDownX = 0.f;
-  private float _voiceDownY = 0.f;
   private boolean _voiceGestureActive = false;
   private VoiceInputController.FanSelection _voiceAnimatedFan =
     VoiceInputController.FanSelection.NONE;
@@ -59,47 +51,18 @@ public class Keyboard2View extends View
   private final RectF _voiceAnchorRect = new RectF();
   private final Paint _voicePanelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint _voiceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-  private final Paint _voiceHintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-  private final Paint _voiceMicPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint _voiceGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-  private final Paint _voiceSlotStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final RectF _voiceLeftSlotBounds = new RectF();
   private final RectF _voiceRightSlotBounds = new RectF();
   private final RectF _voiceKeyboardBounds = new RectF();
   private static final float VOICE_DESIGN_WIDTH = 412.f;
-  private static final float VOICE_DESIGN_SPACE_LEFT = 117.f;
   private static final float VOICE_DESIGN_SPACE_TOP = 296.f;
-  private static final float VOICE_DESIGN_SPACE_WIDTH = 177.f;
-  private static final float VOICE_DESIGN_SPACE_HEIGHT = 46.f;
   private static final float VOICE_SLOT_TOP_OFFSET =
     VOICE_DESIGN_SPACE_TOP - 129.f;
   private static final float VOICE_SLOT_WIDTH = 186.f;
   private static final float VOICE_SLOT_HEIGHT = 107.f;
-  private final Runnable _voiceLongPressRunnable = new Runnable() {
-    @Override
-    public void run()
-    {
-      if (_voicePendingKey == null || _voiceInputController == null)
-        return;
-      Logs.debug("voice-space long-press fired");
-      if (!getKeyBounds(_voicePendingKey, _voiceAnchorRect))
-        return;
-      if (_voiceInputController.start(_voiceAnchorRect))
-      {
-        Logs.debug("voice-space long-press started");
-        _voiceGestureActive = true;
-        resetVoiceFanAnimation();
-        _voiceFan = VoiceInputController.FanSelection.NONE;
-        _voicePendingKey = null;
-        _pointers.onTouchCancel();
-        invalidate();
-      }
-      else
-        Logs.debug("voice-space long-press start rejected");
-    }
-  };
-
-  private static int _currentWhat = 0;
+  private static final KeyValue VOICE_SPACE_ICON =
+    KeyValue.getSpecialKeyByName("voice_typing");
 
   private Config _config;
 
@@ -187,9 +150,7 @@ public class Keyboard2View extends View
   {
     _mods = Pointers.Modifiers.EMPTY;
     _pointers.clear();
-    _voiceGestureHandler.removeCallbacks(_voiceLongPressRunnable);
     _voicePointerId = -1;
-    _voicePendingKey = null;
     _voiceGestureActive = false;
     _voiceFan = VoiceInputController.FanSelection.NONE;
     requestLayout();
@@ -229,6 +190,14 @@ public class Keyboard2View extends View
     return KeyModifier.modify(k, mods);
   }
 
+  @Override
+  public long getLongPressTimeout(KeyboardData.Key key, KeyValue value)
+  {
+    if (isVoiceSpaceKey(key, value))
+      return VoiceInputConfig.get_trigger_delay_ms(Config.globalPrefs());
+    return -1;
+  }
+
   public void onPointerDown(KeyValue k, boolean isSwipe)
   {
     updateFlags();
@@ -260,6 +229,31 @@ public class Keyboard2View extends View
       vibrate();
   }
 
+  @Override
+  public boolean onPointerLongPress(KeyboardData.Key key, KeyValue value,
+      Pointers.Modifiers mods, int pointerId)
+  {
+    if (!isVoiceSpaceKey(key, value))
+      return false;
+    if (_voiceInputController == null)
+      return false;
+    Logs.debug("voice-space long-press fired");
+    if (!getKeyBounds(key, _voiceAnchorRect))
+      return false;
+    if (!_voiceInputController.start(_voiceAnchorRect))
+    {
+      Logs.debug("voice-space long-press start rejected");
+      return false;
+    }
+    Logs.debug("voice-space long-press started");
+    _voicePointerId = pointerId;
+    _voiceGestureActive = true;
+    resetVoiceFanAnimation();
+    _voiceFan = VoiceInputController.FanSelection.NONE;
+    invalidate();
+    return true;
+  }
+
   private void updateFlags()
   {
     _mods = _pointers.getModifiers();
@@ -289,7 +283,6 @@ public class Keyboard2View extends View
     {
       case MotionEvent.ACTION_UP:
       case MotionEvent.ACTION_POINTER_UP:
-        cancelVoiceLongPressIfNeeded(event.getPointerId(event.getActionIndex()));
         _pointers.onTouchUp(event.getPointerId(event.getActionIndex()));
         break;
       case MotionEvent.ACTION_DOWN:
@@ -299,29 +292,13 @@ public class Keyboard2View extends View
         float ty = event.getY(p);
         KeyboardData.Key key = getKeyAtPosition(tx, ty);
         if (key != null)
-        {
-          maybeStartVoiceLongPress(event.getPointerId(p), tx, ty, key);
           _pointers.onTouchDown(tx, ty, event.getPointerId(p), key);
-        }
         break;
       case MotionEvent.ACTION_MOVE:
-        if (_voicePendingKey != null)
-        {
-          int idx = event.findPointerIndex(_voicePointerId);
-          if (idx >= 0)
-          {
-            float dx = event.getX(idx) - _voiceDownX;
-            float dy = event.getY(idx) - _voiceDownY;
-            if (Math.abs(dx) + Math.abs(dy) > _config.swipe_dist_px / 3f)
-              cancelVoiceLongPress();
-          }
-        }
         for (p = 0; p < event.getPointerCount(); p++)
           _pointers.onTouchMove(event.getX(p), event.getY(p), event.getPointerId(p));
         break;
       case MotionEvent.ACTION_CANCEL:
-        if (_voicePendingKey != null)
-          cancelVoiceLongPress();
         _pointers.onTouchCancel();
         break;
       default:
@@ -465,7 +442,7 @@ public class Keyboard2View extends View
         Theme.Computed.Key tc_key = isKeyDown ? _tc.key_activated : _tc.key;
         drawKeyFrame(canvas, x, y, keyW, keyH, tc_key);
         if (k.keys[0] != null)
-          drawLabel(canvas, k.keys[0], keyW / 2f + x, y, keyH, isKeyDown, tc_key);
+          drawLabel(canvas, k, k.keys[0], keyW / 2f + x, y, keyH, isKeyDown, tc_key);
         for (int i = 1; i < 9; i++)
         {
           if (k.keys[i] != null)
@@ -537,10 +514,13 @@ public class Keyboard2View extends View
     return sublabel ? _theme.subLabelColor : _theme.labelColor;
   }
 
-  private void drawLabel(Canvas canvas, KeyValue kv, float x, float y,
+  private void drawLabel(Canvas canvas, KeyboardData.Key key, KeyValue kv, float x, float y,
       float keyH, boolean isKeyDown, Theme.Computed.Key tc)
   {
-    kv = modifyKey(kv, _mods);
+    if (isVoiceSpaceKey(key, kv))
+      kv = VOICE_SPACE_ICON;
+    else
+      kv = modifyKey(kv, _mods);
     if (kv == null)
       return;
     float textSize = scaleTextSize(kv, true);
@@ -594,37 +574,6 @@ public class Keyboard2View extends View
     return label_size * smaller_font;
   }
 
-  private void maybeStartVoiceLongPress(int pointerId, float x, float y,
-      KeyboardData.Key key)
-  {
-    if (_voiceInputController == null || !_voiceInputController.is_enabled())
-      return;
-    if (!isSpaceKey(key))
-      return;
-    Logs.debug("voice-space down pointer=" + pointerId);
-    _voicePointerId = pointerId;
-    _voicePendingKey = key;
-    _voiceDownX = x;
-    _voiceDownY = y;
-    _voiceGestureHandler.postDelayed(_voiceLongPressRunnable,
-        VoiceInputConfig.get_trigger_delay_ms(Config.globalPrefs()));
-  }
-
-  private void cancelVoiceLongPressIfNeeded(int pointerId)
-  {
-    if (_voicePointerId == pointerId)
-      cancelVoiceLongPress();
-  }
-
-  private void cancelVoiceLongPress()
-  {
-    if (_voicePendingKey != null)
-      Logs.debug("voice-space cancel pending pointer=" + _voicePointerId);
-    _voiceGestureHandler.removeCallbacks(_voiceLongPressRunnable);
-    _voicePointerId = -1;
-    _voicePendingKey = null;
-  }
-
   private boolean handleVoiceGesture(MotionEvent event)
   {
     int idx;
@@ -674,7 +623,7 @@ public class Keyboard2View extends View
 
   private void finishVoiceGestureState()
   {
-    cancelVoiceLongPress();
+    _voicePointerId = -1;
     _voiceGestureActive = false;
     _voiceFan = VoiceInputController.FanSelection.NONE;
     invalidate();
@@ -701,6 +650,17 @@ public class Keyboard2View extends View
         return true;
     }
     return false;
+  }
+
+  private boolean isVoiceSpaceKey(KeyboardData.Key key, KeyValue value)
+  {
+    return _voiceInputController != null
+      && _voiceInputController.is_enabled()
+      && key != null
+      && isSpaceKey(key)
+      && value != null
+      && value.getKind() == KeyValue.Kind.Editing
+      && value.getEditing() == KeyValue.Editing.SPACE_BAR;
   }
 
   private boolean getKeyBounds(KeyboardData.Key target, RectF out)
