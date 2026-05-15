@@ -14,7 +14,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -29,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -45,7 +49,7 @@ class ComposeLauncherActivity : ComponentActivity() {
       KeyboardAppTheme {
         LauncherScreen(
           openSettings = {
-            startActivity(Intent(this, ComposeSettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            startActivity(Intent(this, ComposeSettingsActivity::class.java))
           },
           openImeSettings = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
           openImePicker = {
@@ -71,8 +75,11 @@ private fun LauncherScreen(
   AppScaffold(
     title = stringResource(R.string.app_name),
     actions = {
-      TextButton(onClick = openSettings) {
-        Text(stringResource(R.string.launcher_button_settings))
+      IconButton(onClick = openSettings) {
+        Icon(
+          painter = painterResource(R.drawable.cog_outline),
+          contentDescription = stringResource(R.string.launcher_button_settings)
+        )
       }
     }
   ) { modifier ->
@@ -148,8 +155,8 @@ private fun LauncherAnimationRow(background: Int, foreground: Int, label: String
     ) {
       AndroidView(
         modifier = Modifier
-          .height(104.dp)
-          .weight(1f),
+          .height(120.dp)
+          .wrapContentWidth(),
         factory = { context ->
           ImageView(context).apply {
             setBackgroundResource(background)

@@ -231,7 +231,13 @@ private fun IntVoiceSlider(
     min = min.toFloat(),
     max = max.toFloat(),
     step = step.toFloat(),
-    suffix = suffix
+    suffix = suffix,
+    defaultValue = default.toFloat(),
+    onResetToDefault = {
+      value = default
+      prefs.edit().putInt(key, default).apply()
+      save()
+    }
   ) {
     value = it.toInt()
     prefs.edit().putInt(key, value).apply()

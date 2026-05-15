@@ -292,11 +292,6 @@ public class Keyboard2View extends View
     {
       case MotionEvent.ACTION_UP:
       case MotionEvent.ACTION_POINTER_UP:
-        if (isVoiceInterceptPointer(event.getPointerId(event.getActionIndex())))
-        {
-          cancelVoiceLongPressIfNeeded(event.getPointerId(event.getActionIndex()));
-          return true;
-        }
         cancelVoiceLongPressIfNeeded(event.getPointerId(event.getActionIndex()));
         _pointers.onTouchUp(event.getPointerId(event.getActionIndex()));
         break;
@@ -308,8 +303,7 @@ public class Keyboard2View extends View
         KeyboardData.Key key = getKeyAtPosition(tx, ty);
         if (key != null)
         {
-          if (shouldInterceptVoiceSpace(event.getPointerId(p), tx, ty, key))
-            return true;
+          maybeStartVoiceLongPress(event.getPointerId(p), tx, ty, key);
           _pointers.onTouchDown(tx, ty, event.getPointerId(p), key);
         }
         break;
@@ -322,23 +316,15 @@ public class Keyboard2View extends View
             float dx = event.getX(idx) - _voiceDownX;
             float dy = event.getY(idx) - _voiceDownY;
             if (Math.abs(dx) + Math.abs(dy) > _config.swipe_dist_px / 3f)
-            {
               cancelVoiceLongPress();
-              return true;
-            }
           }
-          return true;
         }
         for (p = 0; p < event.getPointerCount(); p++)
           _pointers.onTouchMove(event.getX(p), event.getY(p), event.getPointerId(p));
         break;
       case MotionEvent.ACTION_CANCEL:
         if (_voicePendingKey != null)
-        {
           cancelVoiceLongPress();
-          return true;
-        }
-        cancelVoiceLongPress();
         _pointers.onTouchCancel();
         break;
       default:
@@ -630,23 +616,6 @@ public class Keyboard2View extends View
     _voiceDownY = y;
     _voiceGestureHandler.postDelayed(_voiceLongPressRunnable,
         VoiceInputConfig.get_trigger_delay_ms(Config.globalPrefs()));
-  }
-
-  private boolean shouldInterceptVoiceSpace(int pointerId, float x, float y,
-      KeyboardData.Key key)
-  {
-    if (_voiceInputController == null || !_voiceInputController.is_enabled())
-      return false;
-    if (!isSpaceKey(key))
-      return false;
-    Logs.debug("voice-space intercept pointer=" + pointerId);
-    maybeStartVoiceLongPress(pointerId, x, y, key);
-    return true;
-  }
-
-  private boolean isVoiceInterceptPointer(int pointerId)
-  {
-    return _voicePendingKey != null && _voicePointerId == pointerId;
   }
 
   private void cancelVoiceLongPressIfNeeded(int pointerId)

@@ -2,7 +2,9 @@ package juloo.keyboard2
 
 import android.content.Context
 import android.os.Build
+import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -46,10 +50,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import kotlin.math.roundToInt
 
@@ -98,7 +106,12 @@ fun AppScaffold(
         title = { Text(title, fontWeight = FontWeight.SemiBold) },
         navigationIcon = {
           if (canGoBack) {
-            TextButton(onClick = onBack) { Text(android.R.string.cancel.asString()) }
+            IconButton(onClick = onBack) {
+              Icon(
+                painter = painterResource(R.drawable.arrow_back_outline),
+                contentDescription = android.R.string.cancel.asString()
+              )
+            }
           }
         },
         actions = { actions() }
@@ -155,14 +168,63 @@ fun PreferenceRow(
     Modifier
   }
   ListItem(
-    headlineContent = { Text(title, color = rowTextColor(enabled)) },
+    headlineContent = {
+      KeyAwareText(
+        text = title,
+        color = rowTextColor(enabled),
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = FontWeight.Normal
+      )
+    },
     supportingContent = summary?.let {
-      { Text(it, color = rowSubTextColor(enabled)) }
+      {
+        KeyAwareText(
+          text = it,
+          color = rowSubTextColor(enabled),
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.Normal
+        )
+      }
     },
     trailingContent = trailing,
     modifier = modifier
   )
 }
+
+@Composable
+fun KeyAwareText(
+  text: String,
+  color: Color,
+  style: androidx.compose.ui.text.TextStyle,
+  modifier: Modifier = Modifier,
+  fontWeight: FontWeight? = null
+) {
+  if (!containsKeyFontGlyph(text)) {
+    Text(text, color = color, style = style, fontWeight = fontWeight, modifier = modifier)
+    return
+  }
+  val context = LocalContext.current
+  val typeface = remember { Theme.getKeyFont(context) }
+  val textSizeSp = style.fontSize.takeIf { it != TextUnit.Unspecified }
+  Box(modifier = modifier) {
+    AndroidView(
+      factory = { ctx ->
+        TextView(ctx).apply {
+          this.typeface = typeface
+        }
+      },
+      update = { view ->
+        view.text = text
+        view.setTextColor(color.toArgb())
+        val sizeSp = if (textSizeSp != null) textSizeSp.value else 16f
+        view.textSize = sizeSp
+      }
+    )
+  }
+}
+
+private fun containsKeyFontGlyph(text: String): Boolean =
+  text.any { ch -> ch.code in 0xE000..0xF8FF }
 
 @Composable
 fun SwitchRow(
@@ -195,13 +257,20 @@ fun SliderRow(
   max: Float,
   step: Float,
   suffix: String,
+  defaultValue: Float? = null,
   enabled: Boolean = true,
+  onResetToDefault: (() -> Unit)? = null,
   onValueChangeFinished: (Float) -> Unit
 ) {
   var localValue by remember(value) { mutableStateOf(value.toFloat()) }
+  val quantizedValue = quantize(localValue, min, max, step)
+  val quantizedDefaultValue = defaultValue?.let { quantize(it, min, max, step) }
+  val discreteValueCount = (((max - min) / step).roundToInt() + 1).coerceAtLeast(1)
+  val useDiscreteSlider = discreteValueCount < 15
+  val canReset = enabled && quantizedDefaultValue != null && kotlin.math.abs(quantizedValue - quantizedDefaultValue) > 0.0001f
   val displayed =
-    if (step >= 1f) localValue.roundToInt().toString()
-    else "%.2f".format(localValue)
+    if (step >= 1f) quantizedValue.roundToInt().toString()
+    else "%.2f".format(quantizedValue)
   Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
     Row(
       modifier = Modifier.fillMaxWidth(),
@@ -209,15 +278,39 @@ fun SliderRow(
       verticalAlignment = Alignment.CenterVertically
     ) {
       Text(title, color = rowTextColor(enabled), style = MaterialTheme.typography.bodyLarge)
-      Text("$displayed$suffix", color = rowSubTextColor(enabled), style = MaterialTheme.typography.bodyMedium)
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if (onResetToDefault != null && quantizedDefaultValue != null) {
+          IconButton(
+            onClick = {
+              localValue = quantizedDefaultValue
+              onResetToDefault()
+            },
+            enabled = canReset
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.restore_default_outline),
+              contentDescription = "Reset to default",
+              tint = if (canReset) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
+            )
+          }
+        }
+        Text("$displayed$suffix", color = rowSubTextColor(enabled), style = MaterialTheme.typography.bodyMedium)
+      }
     }
     Slider(
       value = localValue.coerceIn(min, max),
       valueRange = min..max,
-      steps = (((max - min) / step).roundToInt() - 1).coerceAtLeast(0),
+      steps = if (useDiscreteSlider) (discreteValueCount - 2).coerceAtLeast(0) else 0,
       enabled = enabled,
-      onValueChange = { localValue = quantize(it, min, max, step) },
-      onValueChangeFinished = { onValueChangeFinished(quantize(localValue, min, max, step)) }
+      onValueChange = {
+        val clamped = it.coerceIn(min, max)
+        localValue = if (useDiscreteSlider) quantize(clamped, min, max, step) else clamped
+      },
+      onValueChangeFinished = {
+        val snapped = quantize(localValue, min, max, step)
+        localValue = snapped
+        onValueChangeFinished(snapped)
+      }
     )
   }
 }

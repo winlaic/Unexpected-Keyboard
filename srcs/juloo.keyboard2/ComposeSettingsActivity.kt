@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.os.Bundle
 import android.preference.PreferenceManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -86,6 +87,10 @@ private fun SettingsRoot(
   save: () -> Unit
 ) {
   var screen by remember { mutableStateOf(SettingsScreen.Main) }
+  val navigateBack = {
+    if (screen == SettingsScreen.Main) onBack() else screen = SettingsScreen.Main
+  }
+  BackHandler(enabled = true, onBack = navigateBack)
   val title = when (screen) {
     SettingsScreen.Main -> stringResource(R.string.app_name)
     SettingsScreen.Layouts -> stringResource(R.string.pref_category_layout)
@@ -99,9 +104,7 @@ private fun SettingsRoot(
   AppScaffold(
     title = title,
     canGoBack = screen != SettingsScreen.Main,
-    onBack = {
-      if (screen == SettingsScreen.Main) onBack() else screen = SettingsScreen.Main
-    }
+    onBack = navigateBack
   ) { modifier ->
     when (screen) {
       SettingsScreen.Main -> MainSettingsScreen(
@@ -598,12 +601,17 @@ private fun StringListPref(
   save: () -> Unit
 ) {
   val context = LocalContext.current
-  var value by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
+  val values = context.stringArray(valuesId)
+  val persisted = prefs.getString(key, default) ?: default
+  val initial = if (values.contains(persisted)) persisted else default
+  if (persisted != initial)
+    prefs.edit().putString(key, initial).apply()
+  var value by remember { mutableStateOf(initial) }
   ListPreferenceRow(
     title = stringResource(titleId),
     value = value,
     entries = context.stringArray(entriesId),
-    values = context.stringArray(valuesId)
+    values = values
   ) {
     value = it
     prefs.edit().putString(key, it).apply()
@@ -631,7 +639,13 @@ private fun IntSliderPref(
     max = max.toFloat(),
     step = 1f,
     suffix = suffix,
-    enabled = enabled
+    defaultValue = default.toFloat(),
+    enabled = enabled,
+    onResetToDefault = {
+      value = default
+      prefs.edit().putInt(key, default).apply()
+      save()
+    }
   ) {
     value = it.toInt()
     prefs.edit().putInt(key, value).apply()
@@ -659,7 +673,13 @@ private fun FloatSliderPref(
     max = max,
     step = 0.05f,
     suffix = suffix,
-    enabled = enabled
+    defaultValue = default,
+    enabled = enabled,
+    onResetToDefault = {
+      value = default
+      prefs.edit().putFloat(key, default).apply()
+      save()
+    }
   ) {
     value = it
     prefs.edit().putFloat(key, value).apply()
