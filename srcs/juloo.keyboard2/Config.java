@@ -133,14 +133,14 @@ public final class Config
     }
     else
     {
-      keyboardHeightPercent = _prefs.getInt(foldable_unfolded ? "keyboard_height_unfolded" : "keyboard_height", 35);
+      keyboardHeightPercent = _prefs.getInt(foldable_unfolded ? "keyboard_height_unfolded" : "keyboard_height", 27);
     }
     layouts = LayoutsPreference.load_from_preferences(res, _prefs);
     inverse_numpad = _prefs.getString("numpad_layout", "default").equals("low_first");
-    String number_row = _prefs.getString("number_row", "no_number_row");
+    String number_row = _prefs.getString("number_row", "symbols");
     add_number_row = !number_row.equals("no_number_row");
     number_row_symbols = number_row.equals("symbols");
-    suggestions_enabled = _prefs.getBoolean("suggestions", true);
+    suggestions_enabled = _prefs.getBoolean("suggestions", false);
     // The baseline for the swipe distance correspond to approximately the
     // width of a key in portrait mode, as most layouts have 10 columns.
     // Multipled by the DPI ratio because most swipes are made in the diagonals.
@@ -183,7 +183,7 @@ public final class Config
       _prefs.getFloat("character_size", 1.15f)
       * characterSizeScale;
     theme = getThemeId(res, _prefs.getString("theme", ""));
-    autocapitalisation = _prefs.getBoolean("autocapitalisation", true);
+    autocapitalisation = _prefs.getBoolean("autocapitalisation", false);
     change_method_key_replacement = get_change_method_key_replacement(_prefs);
     extra_keys_param = ExtraKeysPreference.get_extra_keys(_prefs);
     extra_keys_custom = CustomExtraKeysPreference.get(_prefs);
@@ -349,8 +349,13 @@ public final class Config
         LayoutsPreference.save_to_preferences(e, l);
         // Fallthrough
       case 1:
-        boolean add_number_row = prefs.getBoolean("number_row", false);
-        e.putString("number_row", add_number_row ? "no_symbols" : "no_number_row");
+        if (prefs.contains("number_row"))
+        {
+          boolean add_number_row = prefs.getBoolean("number_row", false);
+          e.putString("number_row", add_number_row ? "no_symbols" : "no_number_row");
+        }
+        else
+          e.putString("number_row", "symbols");
         // Fallthrough
       case 2:
         if (!prefs.contains("number_entry_layout")) {

@@ -5,11 +5,16 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.preference.Preference;
 import android.preference.PreferenceActivity;
+import android.preference.PreferenceGroup;
 import android.preference.PreferenceManager;
+import android.preference.PreferenceScreen;
 
 public class SettingsActivity extends PreferenceActivity
 {
+  private static final String EXTRA_SCREEN_KEY = "juloo.keyboard2.SCREEN_KEY";
+
   @Override
   public void onCreate(Bundle savedInstanceState)
   {
@@ -36,6 +41,10 @@ public class SettingsActivity extends PreferenceActivity
       startActivity(new Intent(this, VoiceInputSettingsActivity.class));
       return true;
     });
+    openNestedScreensInActivity(getPreferenceScreen());
+    String screenKey = getIntent().getStringExtra(EXTRA_SCREEN_KEY);
+    if (screenKey != null)
+      showPreferenceScreen(screenKey);
   }
 
   void fallbackEncrypted()
@@ -50,5 +59,37 @@ public class SettingsActivity extends PreferenceActivity
       .copy_preferences_to_protected_storage(this,
           getPreferenceManager().getSharedPreferences());
     super.onStop();
+  }
+
+  private void openNestedScreensInActivity(PreferenceGroup group)
+  {
+    for (int i = 0; i < group.getPreferenceCount(); i++)
+    {
+      Preference preference = group.getPreference(i);
+      if (preference instanceof PreferenceScreen)
+      {
+        PreferenceScreen screen = (PreferenceScreen)preference;
+        if (screen.getPreferenceCount() > 0 && screen.getKey() != null)
+        {
+          Intent intent = new Intent(this, SettingsActivity.class);
+          intent.putExtra(EXTRA_SCREEN_KEY, screen.getKey());
+          screen.setIntent(intent);
+        }
+      }
+      if (preference instanceof PreferenceGroup)
+        openNestedScreensInActivity((PreferenceGroup)preference);
+    }
+  }
+
+  private void showPreferenceScreen(String key)
+  {
+    Preference preference = findPreference(key);
+    if (!(preference instanceof PreferenceScreen))
+    {
+      finish();
+      return;
+    }
+    setTitle(preference.getTitle());
+    setPreferenceScreen((PreferenceScreen)preference);
   }
 }

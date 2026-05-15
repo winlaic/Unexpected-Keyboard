@@ -144,5 +144,7 @@
     <item name="android:layout_height">24dp</item>
   </style>
   <style name="appTheme" parent="@android:style/Theme.Material.Light"/>
-  <style name="settingsTheme" parent="appTheme"/>
+  <style name="settingsTheme" parent="appTheme">
+    <item name="android:windowActionBarOverlay">false</item>
+  </style>
 </resources>

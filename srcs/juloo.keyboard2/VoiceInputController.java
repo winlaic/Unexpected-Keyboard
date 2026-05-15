@@ -68,6 +68,7 @@ final class VoiceInputController
   private volatile boolean _starting;
   private volatile boolean _acceptingStreamSession;
   private volatile boolean _acceptingOfflineSession;
+  private volatile int _sessionId = 0;
   private int _streamedPcmBytes = 0;
   private int _offlinePcmBytes = 0;
   private String _liveText = "";
@@ -123,7 +124,9 @@ final class VoiceInputController
       Logs.debug("voice-input already visible");
       return false;
     }
+    final int sessionId = begin_session();
     _starting = true;
+    _finalizing = false;
     _acceptingStreamSession = true;
     _acceptingOfflineSession = true;
     _streamedPcmBytes = 0;
@@ -143,13 +146,14 @@ final class VoiceInputController
       {
         Logs.debug("voice-input background start");
         start_recording();
-        run_async("voice-input-offline-start", () -> connect_offline_session());
-        connect_streaming_session();
+        run_async("voice-input-offline-start",
+            () -> connect_offline_session(sessionId));
+        connect_streaming_session(sessionId);
       }
       catch (Exception e)
       {
         Logs.exn("Voice input start failed", e);
-        _handler.post(() -> fail());
+        _handler.post(() -> fail_if_current(sessionId));
       }
     });
     return true;
@@ -189,28 +193,24 @@ final class VoiceInputController
       action = ReleaseAction.COMMIT;
     if (action == ReleaseAction.CANCEL)
     {
-      _acceptingStreamSession = false;
-      _acceptingOfflineSession = false;
-      _overlay.status = _ims.getString(R.string.voice_input_cancel);
+      VoiceInputProvider.StreamingSession session;
+      VoiceInputProvider.OfflineSession offlineSession;
+      synchronized (_audioLock)
+      {
+        session = _streamSession;
+        offlineSession = _offlineSession;
+        _streamSession = null;
+        _offlineSession = null;
+      }
+      clear_composing_text();
+      reset_ui();
+      toast(R.string.voice_input_cancelled);
       run_async("voice-input-cancel", () -> {
-        try
-        {
-          stop_recording();
-          VoiceInputProvider.StreamingSession session = _streamSession;
-          if (session != null)
-            session.cancel();
-          VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
-          if (offlineSession != null)
-            offlineSession.cancel();
-        }
-        finally
-        {
-          _handler.post(() -> {
-            clear_composing_text();
-            reset_ui();
-            toast(R.string.voice_input_cancelled);
-          });
-        }
+        stop_recording();
+        if (session != null)
+          session.cancel();
+        if (offlineSession != null)
+          offlineSession.cancel();
       });
       return;
     }
@@ -218,6 +218,7 @@ final class VoiceInputController
     _acceptingStreamSession = false;
     _overlay.status = _ims.getString(R.string.voice_input_processing);
     final ReleaseAction releaseAction = action;
+    final int sessionId = _sessionId;
     run_async("voice-input-finalize", () -> {
       try
       {
@@ -233,12 +234,14 @@ final class VoiceInputController
           session.finish();
           session.cancel();
         }
-        finalize_recognition(offlineSession, fallbackText, releaseAction);
+        finalize_recognition(offlineSession, fallbackText, releaseAction, sessionId);
       }
       catch (Exception e)
       {
         Logs.exn("Voice input finalize failed", e);
         _handler.post(() -> {
+          if (!is_current_session(sessionId))
+            return;
           clear_composing_text();
           reset_ui();
           toast(R.string.voice_input_failed);
@@ -249,22 +252,16 @@ final class VoiceInputController
 
   void shutdown()
   {
-    _acceptingStreamSession = false;
-    _acceptingOfflineSession = false;
-    request_stop_recording();
-    run_async("voice-input-shutdown", () -> {
-      stop_recording();
-      VoiceInputProvider.StreamingSession session = _streamSession;
-      if (session != null)
-        session.cancel();
-      VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
-      if (offlineSession != null)
-        offlineSession.cancel();
-    });
+    abort_session("shutdown", false);
+  }
+
+  void abort_current_input(String reason, boolean clearComposing)
+  {
+    abort_session(reason, clearComposing);
   }
 
   private void finalize_recognition(VoiceInputProvider.OfflineSession offlineSession,
-      String fallbackText, ReleaseAction action)
+      String fallbackText, ReleaseAction action, int sessionId)
   {
     try
     {
@@ -273,11 +270,14 @@ final class VoiceInputController
       {
         try
         {
-          String streamed = offlineSession.finish_and_get_result().trim();
+          String streamed = finish_offline_with_timeout(offlineSession, 6500).trim();
           if (!streamed.equals(""))
           {
             final String committed = streamed;
-            _handler.post(() -> commit_final_text(committed, action));
+            _handler.post(() -> {
+              if (is_current_session(sessionId))
+                commit_final_text(committed, action);
+            });
             return;
           }
         }
@@ -287,12 +287,17 @@ final class VoiceInputController
         }
       }
       final String committed = finalText;
-      _handler.post(() -> commit_final_text(committed, action));
+      _handler.post(() -> {
+        if (is_current_session(sessionId))
+          commit_final_text(committed, action);
+      });
     }
     catch (Exception e)
     {
       Logs.exn("Voice input refine failed", e);
       _handler.post(() -> {
+        if (!is_current_session(sessionId))
+          return;
         if (!fallbackText.equals(""))
           commit_final_text(fallbackText, action);
         else
@@ -340,9 +345,9 @@ final class VoiceInputController
       conn.commitText("\n", 1);
   }
 
-  private void update_streaming_text(String text, boolean isFinal)
+  private void update_streaming_text(String text, boolean isFinal, int sessionId)
   {
-    if (!_overlay.visible || _finalizing)
+    if (!is_current_session(sessionId) || !_overlay.visible || _finalizing)
       return;
     _liveText = text;
     _overlay.transcript = text;
@@ -356,35 +361,46 @@ final class VoiceInputController
 
   private void fail()
   {
-    _starting = false;
-    _acceptingStreamSession = false;
-    _acceptingOfflineSession = false;
-    hide_overlay();
     request_stop_recording();
+    VoiceInputProvider.StreamingSession session;
+    VoiceInputProvider.OfflineSession offlineSession;
+    synchronized (_audioLock)
+    {
+      session = _streamSession;
+      offlineSession = _offlineSession;
+      _streamSession = null;
+      _offlineSession = null;
+    }
+    clear_composing_text();
+    reset_ui();
+    toast(R.string.voice_input_failed);
     run_async("voice-input-fail", () -> {
       stop_recording();
-      VoiceInputProvider.StreamingSession session = _streamSession;
       if (session != null)
         session.cancel();
-      VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
       if (offlineSession != null)
         offlineSession.cancel();
-      _handler.post(() -> {
-        clear_composing_text();
-        reset_ui();
-        toast(R.string.voice_input_failed);
-      });
     });
+  }
+
+  private void fail_if_current(int sessionId)
+  {
+    if (is_current_session(sessionId))
+      fail();
   }
 
   private void reset_ui()
   {
+    invalidate_session();
     _starting = false;
     _acceptingStreamSession = false;
     _acceptingOfflineSession = false;
     _finalizing = false;
-    _streamSession = null;
-    _offlineSession = null;
+    synchronized (_audioLock)
+    {
+      _streamSession = null;
+      _offlineSession = null;
+    }
     _streamedPcmBytes = 0;
     _offlinePcmBytes = 0;
     _overlay.visible = false;
@@ -395,6 +411,38 @@ final class VoiceInputController
     _overlay.level = 0.f;
     _liveText = "";
     notify_ui();
+  }
+
+  private void abort_session(String reason, boolean clearComposing)
+  {
+    Logs.debug("voice-input abort " + reason);
+    invalidate_session();
+    _starting = false;
+    _acceptingStreamSession = false;
+    _acceptingOfflineSession = false;
+    _finalizing = false;
+    request_stop_recording();
+
+    VoiceInputProvider.StreamingSession session;
+    VoiceInputProvider.OfflineSession offlineSession;
+    synchronized (_audioLock)
+    {
+      session = _streamSession;
+      offlineSession = _offlineSession;
+      _streamSession = null;
+      _offlineSession = null;
+    }
+    if (clearComposing)
+      clear_composing_text();
+    reset_ui();
+
+    run_async("voice-input-abort", () -> {
+      stop_recording();
+      if (session != null)
+        session.cancel();
+      if (offlineSession != null)
+        offlineSession.cancel();
+    });
   }
 
   private void hide_overlay()
@@ -522,7 +570,7 @@ final class VoiceInputController
     return pcmData;
   }
 
-  private void connect_streaming_session()
+  private void connect_streaming_session(int sessionId)
   {
     try
     {
@@ -531,7 +579,7 @@ final class VoiceInputController
           @Override
           public void on_partial_text(String text, boolean isFinal)
           {
-            _handler.post(() -> update_streaming_text(text, isFinal));
+            _handler.post(() -> update_streaming_text(text, isFinal, sessionId));
           }
 
           @Override
@@ -539,14 +587,14 @@ final class VoiceInputController
           {
             Logs.exn("Voice input streaming failed", error);
             _handler.post(() -> {
-              if (_overlay.visible)
+              if (is_current_session(sessionId) && _overlay.visible)
                 fail();
             });
           }
         });
       synchronized (_audioLock)
       {
-        if (!_acceptingStreamSession)
+        if (!is_current_session(sessionId) || !_acceptingStreamSession)
         {
           session.cancel();
           return;
@@ -565,7 +613,7 @@ final class VoiceInputController
         }
       }
       _handler.post(() -> {
-        if (_overlay.visible && !_finalizing)
+        if (is_current_session(sessionId) && _overlay.visible && !_finalizing)
         {
           _starting = false;
           _overlay.status = _ims.getString(R.string.voice_input_commit);
@@ -576,18 +624,18 @@ final class VoiceInputController
     catch (Exception e)
     {
       Logs.exn("Voice input connect failed", e);
-      _handler.post(() -> fail());
+      _handler.post(() -> fail_if_current(sessionId));
     }
   }
 
-  private void connect_offline_session()
+  private void connect_offline_session(int sessionId)
   {
     try
     {
       VoiceInputProvider.OfflineSession session = _provider.start_offline_recognition();
       synchronized (_audioLock)
       {
-        if (!_acceptingOfflineSession)
+        if (!is_current_session(sessionId) || !_acceptingOfflineSession)
         {
           session.cancel();
           return;
@@ -610,6 +658,56 @@ final class VoiceInputController
     {
       Logs.exn("Voice input offline connect failed", e);
     }
+  }
+
+  private String finish_offline_with_timeout(
+      VoiceInputProvider.OfflineSession offlineSession, long timeoutMs)
+      throws Exception
+  {
+    final String[] result = new String[]{ "" };
+    final Exception[] error = new Exception[]{ null };
+    Thread worker = new Thread(() -> {
+      try
+      {
+        result[0] = offlineSession.finish_and_get_result();
+      }
+      catch (Exception e)
+      {
+        error[0] = e;
+      }
+    }, "voice-input-offline-result");
+    worker.setDaemon(true);
+    worker.start();
+    try { worker.join(timeoutMs); } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      offlineSession.cancel();
+      return "";
+    }
+    if (worker.isAlive())
+    {
+      Logs.debug("voice-input offline result timeout");
+      offlineSession.cancel();
+      return "";
+    }
+    if (error[0] != null)
+      throw error[0];
+    return result[0] == null ? "" : result[0];
+  }
+
+  private int begin_session()
+  {
+    _sessionId += 1;
+    return _sessionId;
+  }
+
+  private void invalidate_session()
+  {
+    _sessionId += 1;
+  }
+
+  private boolean is_current_session(int sessionId)
+  {
+    return sessionId == _sessionId;
   }
 
   private void feed_offline_tail(VoiceInputProvider.OfflineSession session,

@@ -244,6 +244,7 @@ public class Keyboard2 extends InputMethodService
   @Override
   public void onStartInputView(EditorInfo info, boolean restarting)
   {
+    _voiceInputController.abort_current_input("start-input-view", false);
     _config.editor_config.refresh(info, getResources());
     refresh_config();
     _currentSpecialLayout = refresh_special_layout();
@@ -350,8 +351,16 @@ public class Keyboard2 extends InputMethodService
   @Override
   public void onFinishInputView(boolean finishingInput)
   {
+    _voiceInputController.abort_current_input("finish-input-view", true);
     super.onFinishInputView(finishingInput);
     _keyboard_layout_view.reset();
+  }
+
+  @Override
+  public void onFinishInput()
+  {
+    _voiceInputController.abort_current_input("finish-input", true);
+    super.onFinishInput();
   }
 
   @Override
