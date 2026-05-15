@@ -144,9 +144,5 @@
     <item name="android:layout_height">24dp</item>
   </style>
   <style name="appTheme" parent="@android:style/Theme.Material.Light"/>
-  <style name="settingsTheme" parent="appTheme">
-    <!-- Setting this in the activity theme so it propagate to nested
-         preference screens. -->
-    <item name="android:fitsSystemWindows">true</item>
-  </style>
+  <style name="settingsTheme" parent="appTheme"/>
 </resources>

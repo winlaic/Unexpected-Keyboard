@@ -74,13 +74,6 @@ public class Keyboard2View extends View
   private static final float VOICE_DESIGN_SPACE_TOP = 296.f;
   private static final float VOICE_DESIGN_SPACE_WIDTH = 177.f;
   private static final float VOICE_DESIGN_SPACE_HEIGHT = 46.f;
-  private static final float VOICE_PREVIEW_CENTER_OFFSET_X =
-    40.f + 325.f / 2.f - (VOICE_DESIGN_SPACE_LEFT + VOICE_DESIGN_SPACE_WIDTH / 2.f);
-  private static final float VOICE_PREVIEW_TOP_OFFSET =
-    VOICE_DESIGN_SPACE_TOP - 40.f;
-  private static final float VOICE_PREVIEW_SAFE_TOP = 22.f;
-  private static final float VOICE_PREVIEW_WIDTH = 325.f;
-  private static final float VOICE_PREVIEW_HEIGHT = 59.f;
   private static final float VOICE_SLOT_TOP_OFFSET =
     VOICE_DESIGN_SPACE_TOP - 129.f;
   private static final float VOICE_SLOT_WIDTH = 186.f;
@@ -98,6 +91,7 @@ public class Keyboard2View extends View
       {
         Logs.debug("voice-space long-press started");
         _voiceGestureActive = true;
+        resetVoiceFanAnimation();
         _voiceFan = VoiceInputController.FanSelection.NONE;
         _voicePendingKey = null;
         _pointers.onTouchCancel();
@@ -799,25 +793,7 @@ public class Keyboard2View extends View
         state.fan == VoiceInputController.FanSelection.SEND,
         Color.rgb(74, 164, 190), now);
 
-    RectF preview = voicePreviewBounds(state.anchor);
     drawVoiceSpaceMask(canvas, state.anchor);
-
-    _voiceTextPaint.setColor(Color.argb(242, 58, 66, 76));
-    _voiceTextPaint.setTextAlign(Paint.Align.CENTER);
-    _voiceTextPaint.setTextSize(Math.min(_mainLabelSize * 0.84f,
-        preview.height() * 0.34f));
-    _voiceTextPaint.setShadowLayer(6.f * scale, 0.f, 1.f * scale,
-        Color.argb(120, 255, 255, 255));
-    String transcript = state.transcript.equals("")
-      ? getResources().getString(R.string.voice_input_listening)
-      : state.transcript;
-    int maxLen = Math.min(28, transcript.length());
-    float textY = Math.max(preview.centerY(),
-        preview.top + _voiceTextPaint.getTextSize() * 1.45f);
-    canvas.drawText(transcript, 0, maxLen, preview.centerX(),
-        textY - (_voiceTextPaint.ascent() + _voiceTextPaint.descent()) / 2.f,
-        _voiceTextPaint);
-    _voiceTextPaint.clearShadowLayer();
 
     postInvalidateOnAnimation();
   }
@@ -910,6 +886,13 @@ public class Keyboard2View extends View
       return;
     _voicePreviousFan = _voiceAnimatedFan;
     _voiceAnimatedFan = fan;
+    _voiceFanChangedAtMs = SystemClock.uptimeMillis();
+  }
+
+  private void resetVoiceFanAnimation()
+  {
+    _voiceAnimatedFan = VoiceInputController.FanSelection.NONE;
+    _voicePreviousFan = VoiceInputController.FanSelection.NONE;
     _voiceFanChangedAtMs = SystemClock.uptimeMillis();
   }
 
@@ -1031,18 +1014,6 @@ public class Keyboard2View extends View
     float slotWidth = VOICE_SLOT_WIDTH * xScale;
     leftOut.set(0.f, slotTop, slotWidth, slotBottom);
     rightOut.set(getWidth() - slotWidth, slotTop, getWidth(), slotBottom);
-  }
-
-  private RectF voicePreviewBounds(RectF anchor)
-  {
-    float xScale = getWidth() / VOICE_DESIGN_WIDTH;
-    float previewWidth = VOICE_PREVIEW_WIDTH * xScale;
-    float previewHeight = VOICE_PREVIEW_HEIGHT * xScale;
-    float centerX = anchor.centerX() + VOICE_PREVIEW_CENTER_OFFSET_X * xScale;
-    float top = Math.max(VOICE_PREVIEW_SAFE_TOP * xScale,
-        anchor.top - VOICE_PREVIEW_TOP_OFFSET * xScale);
-    return new RectF(centerX - previewWidth / 2.f, top,
-        centerX + previewWidth / 2.f, top + previewHeight);
   }
 
   private int withAlpha(int color, int alpha)

@@ -178,7 +178,6 @@
     <string name="voice_input_cancel">Release to cancel</string>
     <string name="voice_input_send">Release to send</string>
     <string name="voice_input_hold_hint">Slide left to cancel, right to send</string>
-    <string name="voice_input_listening">Listening…</string>
     <string name="voice_input_finishing">Finishing…</string>
     <string name="voice_input_cancel_label">Undo input</string>
     <string name="voice_input_send_label">Send now</string>
