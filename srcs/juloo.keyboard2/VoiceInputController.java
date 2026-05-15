@@ -49,6 +49,8 @@ final class VoiceInputController
   }
 
   private static final int SAMPLE_RATE = 16000;
+  private static final int RECORD_READ_BYTES =
+    VoiceInputConfig.DEFAULT_OFFLINE_CHUNK_BYTES;
 
   private final Keyboard2 _ims;
   private final Handler _handler;
@@ -62,10 +64,13 @@ final class VoiceInputController
   private volatile boolean _recording;
   private ByteArrayOutputStream _pcmBuffer;
   private VoiceInputProvider.StreamingSession _streamSession;
+  private VoiceInputProvider.OfflineSession _offlineSession;
   private volatile boolean _finalizing;
   private volatile boolean _starting;
   private volatile boolean _acceptingStreamSession;
+  private volatile boolean _acceptingOfflineSession;
   private int _streamedPcmBytes = 0;
+  private int _offlinePcmBytes = 0;
   private String _liveText = "";
 
   VoiceInputController(Keyboard2 ims, Handler handler)
@@ -121,7 +126,9 @@ final class VoiceInputController
     }
     _starting = true;
     _acceptingStreamSession = true;
+    _acceptingOfflineSession = true;
     _streamedPcmBytes = 0;
+    _offlinePcmBytes = 0;
     _liveText = "";
     _overlay.visible = true;
     _overlay.finishing = false;
@@ -137,6 +144,7 @@ final class VoiceInputController
       {
         Logs.debug("voice-input background start");
         start_recording();
+        run_async("voice-input-offline-start", () -> connect_offline_session());
         connect_streaming_session();
       }
       catch (Exception e)
@@ -183,6 +191,7 @@ final class VoiceInputController
     if (action == ReleaseAction.CANCEL)
     {
       _acceptingStreamSession = false;
+      _acceptingOfflineSession = false;
       _overlay.status = _ims.getString(R.string.voice_input_cancel);
       run_async("voice-input-cancel", () -> {
         try
@@ -191,6 +200,9 @@ final class VoiceInputController
           VoiceInputProvider.StreamingSession session = _streamSession;
           if (session != null)
             session.cancel();
+          VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
+          if (offlineSession != null)
+            offlineSession.cancel();
         }
         finally
         {
@@ -210,7 +222,12 @@ final class VoiceInputController
     run_async("voice-input-finalize", () -> {
       try
       {
-        byte[] wavData = pcm_to_wav(stop_recording());
+        byte[] pcmData = stop_recording();
+        VoiceInputProvider.OfflineSession offlineSession =
+          wait_for_offline_session(600);
+        _acceptingOfflineSession = false;
+        feed_offline_tail(offlineSession, pcmData);
+        byte[] wavData = pcm_to_wav(pcmData);
         String fallbackText = _liveText;
         VoiceInputProvider.StreamingSession session = wait_for_stream_session(1500);
         if (session != null)
@@ -218,7 +235,7 @@ final class VoiceInputController
           session.finish();
           session.cancel();
         }
-        finalize_recognition(wavData, fallbackText, releaseAction);
+        finalize_recognition(offlineSession, wavData, fallbackText, releaseAction);
       }
       catch (Exception e)
       {
@@ -235,21 +252,42 @@ final class VoiceInputController
   void shutdown()
   {
     _acceptingStreamSession = false;
+    _acceptingOfflineSession = false;
     request_stop_recording();
     run_async("voice-input-shutdown", () -> {
       stop_recording();
       VoiceInputProvider.StreamingSession session = _streamSession;
       if (session != null)
         session.cancel();
+      VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
+      if (offlineSession != null)
+        offlineSession.cancel();
     });
   }
 
-  private void finalize_recognition(byte[] wavData, String fallbackText,
-      ReleaseAction action)
+  private void finalize_recognition(VoiceInputProvider.OfflineSession offlineSession,
+      byte[] wavData, String fallbackText, ReleaseAction action)
   {
     try
     {
       String finalText = fallbackText;
+      if (offlineSession != null)
+      {
+        try
+        {
+          String streamed = offlineSession.finish_and_get_result().trim();
+          if (!streamed.equals(""))
+          {
+            final String committed = streamed;
+            _handler.post(() -> commit_final_text(committed, action));
+            return;
+          }
+        }
+        catch (Exception e)
+        {
+          Logs.exn("Voice input Ogg refine failed", e);
+        }
+      }
       if (wavData != null && wavData.length > 44)
       {
         String refined = _provider.recognize_once(wavData).trim();
@@ -328,6 +366,7 @@ final class VoiceInputController
   {
     _starting = false;
     _acceptingStreamSession = false;
+    _acceptingOfflineSession = false;
     hide_overlay();
     request_stop_recording();
     run_async("voice-input-fail", () -> {
@@ -335,6 +374,9 @@ final class VoiceInputController
       VoiceInputProvider.StreamingSession session = _streamSession;
       if (session != null)
         session.cancel();
+      VoiceInputProvider.OfflineSession offlineSession = _offlineSession;
+      if (offlineSession != null)
+        offlineSession.cancel();
       _handler.post(() -> {
         clear_composing_text();
         reset_ui();
@@ -347,9 +389,12 @@ final class VoiceInputController
   {
     _starting = false;
     _acceptingStreamSession = false;
+    _acceptingOfflineSession = false;
     _finalizing = false;
     _streamSession = null;
+    _offlineSession = null;
     _streamedPcmBytes = 0;
+    _offlinePcmBytes = 0;
     _overlay.visible = false;
     _overlay.finishing = false;
     _overlay.fan = FanSelection.NONE;
@@ -413,23 +458,29 @@ final class VoiceInputController
 
   private void record_loop(int bufferSize)
   {
-    byte[] buffer = new byte[bufferSize];
+    byte[] buffer = new byte[Math.min(bufferSize, RECORD_READ_BYTES)];
     while (_recording && _recorder != null)
     {
       int read = _recorder.read(buffer, 0, buffer.length);
       if (read <= 0)
         continue;
+      VoiceInputProvider.StreamingSession session;
+      VoiceInputProvider.OfflineSession offlineSession;
       synchronized (_audioLock)
       {
         if (_pcmBuffer != null)
           _pcmBuffer.write(buffer, 0, read);
+        session = _streamSession;
+        if (session != null)
+          _streamedPcmBytes += read;
+        offlineSession = _offlineSession;
+        if (offlineSession != null)
+          _offlinePcmBytes += read;
       }
-      VoiceInputProvider.StreamingSession session = _streamSession;
       if (session != null)
-      {
         session.send_audio(buffer, read);
-        _streamedPcmBytes += read;
-      }
+      if (offlineSession != null)
+        offlineSession.send_audio(buffer, read);
       update_level(buffer, read);
     }
   }
@@ -514,7 +565,9 @@ final class VoiceInputController
           byte[] captured = _pcmBuffer.toByteArray();
           if (captured.length > _streamedPcmBytes)
           {
-            session.send_audio(captured, captured.length);
+            byte[] tail = slice_bytes(captured, _streamedPcmBytes,
+                captured.length - _streamedPcmBytes);
+            session.send_audio(tail, tail.length);
             _streamedPcmBytes = captured.length;
           }
         }
@@ -533,6 +586,58 @@ final class VoiceInputController
       Logs.exn("Voice input connect failed", e);
       _handler.post(() -> fail());
     }
+  }
+
+  private void connect_offline_session()
+  {
+    try
+    {
+      VoiceInputProvider.OfflineSession session = _provider.start_offline_recognition();
+      synchronized (_audioLock)
+      {
+        if (!_acceptingOfflineSession)
+        {
+          session.cancel();
+          return;
+        }
+        _offlineSession = session;
+        if (_pcmBuffer != null)
+        {
+          byte[] captured = _pcmBuffer.toByteArray();
+          if (captured.length > _offlinePcmBytes)
+          {
+            byte[] tail = slice_bytes(captured, _offlinePcmBytes,
+                captured.length - _offlinePcmBytes);
+            session.send_audio(tail, tail.length);
+            _offlinePcmBytes = captured.length;
+          }
+        }
+      }
+    }
+    catch (Exception e)
+    {
+      Logs.exn("Voice input offline connect failed", e);
+    }
+  }
+
+  private void feed_offline_tail(VoiceInputProvider.OfflineSession session,
+      byte[] pcmData)
+  {
+    if (session == null || pcmData == null)
+      return;
+    int start = Math.min(_offlinePcmBytes, pcmData.length);
+    if (start >= pcmData.length)
+      return;
+    byte[] tail = slice_bytes(pcmData, start, pcmData.length - start);
+    session.send_audio(tail, tail.length);
+    _offlinePcmBytes = pcmData.length;
+  }
+
+  private byte[] slice_bytes(byte[] src, int offset, int length)
+  {
+    byte[] out = new byte[length];
+    System.arraycopy(src, offset, out, 0, length);
+    return out;
   }
 
   private byte[] pcm_to_wav(byte[] pcmData)
@@ -627,5 +732,18 @@ final class VoiceInputController
       try { Thread.sleep(20); } catch (InterruptedException _e) { return null; }
     }
     return _streamSession;
+  }
+
+  private VoiceInputProvider.OfflineSession wait_for_offline_session(long timeoutMs)
+  {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    while (System.currentTimeMillis() < deadline)
+    {
+      VoiceInputProvider.OfflineSession session = _offlineSession;
+      if (session != null)
+        return session;
+      try { Thread.sleep(20); } catch (InterruptedException _e) { return null; }
+    }
+    return _offlineSession;
   }
 }

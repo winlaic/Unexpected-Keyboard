@@ -3,6 +3,7 @@ package juloo.keyboard2;
 interface VoiceInputProvider
 {
   StreamingSession start_streaming(Listener listener) throws Exception;
+  OfflineSession start_offline_recognition() throws Exception;
   String recognize_once(byte[] wavData) throws Exception;
 
   interface Listener
@@ -15,6 +16,13 @@ interface VoiceInputProvider
   {
     void send_audio(byte[] pcmData, int length);
     void finish();
+    void cancel();
+  }
+
+  interface OfflineSession
+  {
+    void send_audio(byte[] pcmData, int length);
+    String finish_and_get_result() throws Exception;
     void cancel();
   }
 }

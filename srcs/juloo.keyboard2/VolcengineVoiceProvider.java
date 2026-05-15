@@ -1,12 +1,17 @@
 package juloo.keyboard2;
 
 import android.content.SharedPreferences;
+import android.media.MediaCodec;
+import android.media.MediaFormat;
 import android.util.Base64;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -28,6 +33,9 @@ final class VolcengineVoiceProvider implements VoiceInputProvider
   private static final String OFFLINE_RESOURCE = "volc.bigasr.auc_turbo";
   private static final int SAMPLE_RATE = 16000;
   private static final int STREAMING_SEGMENT_BYTES = SAMPLE_RATE * 2 / 5;
+  private static final int OPUS_BITRATE = 32000;
+  private static final int OPUS_GRANULE_RATE = 48000;
+  private static final int OPUS_CHANNELS = 1;
 
   private static final int MESSAGE_TYPE_CLIENT_FULL_REQUEST = 0x1;
   private static final int MESSAGE_TYPE_CLIENT_AUDIO_ONLY_REQUEST = 0x2;
@@ -107,6 +115,18 @@ final class VolcengineVoiceProvider implements VoiceInputProvider
     if (apiStatus != null && !apiStatus.equals("20000000"))
       throw new RuntimeException("API " + apiStatus + ": " + response);
     return parse_result_text(new JSONObject(response)).trim();
+  }
+
+  @Override
+  public VoiceInputProvider.OfflineSession start_offline_recognition()
+      throws Exception
+  {
+    OfflineOggOpusSession session = new OfflineOggOpusSession(
+        VoiceInputConfig.get_api_key(_prefs),
+        get_or_create_uid(),
+        VoiceInputConfig.get_offline_chunk_bytes(_prefs));
+    session.start();
+    return session;
   }
 
   private String get_or_create_uid()
@@ -435,6 +455,484 @@ final class VolcengineVoiceProvider implements VoiceInputProvider
       byte[] out = new byte[length];
       System.arraycopy(src, offset, out, 0, length);
       return out;
+    }
+  }
+
+  static final class OfflineOggOpusSession
+    implements VoiceInputProvider.OfflineSession
+  {
+    private static final byte[] END = new byte[0];
+
+    private final String _apiKey;
+    private final String _uid;
+    private final int _chunkBytes;
+    private final LinkedBlockingQueue<byte[]> _queue =
+      new LinkedBlockingQueue<byte[]>();
+    private final Object _lock = new Object();
+    private HttpURLConnection _conn;
+    private OutputStream _out;
+    private Thread _worker;
+    private Exception _error;
+    private boolean _closed = false;
+    private boolean _finishQueued = false;
+
+    OfflineOggOpusSession(String apiKey, String uid, int chunkBytes)
+    {
+      _apiKey = apiKey;
+      _uid = uid;
+      _chunkBytes = chunkBytes;
+    }
+
+    void start() throws Exception
+    {
+      _conn = (HttpURLConnection)new URL(OFFLINE_URL).openConnection();
+      _conn.setRequestMethod("POST");
+      _conn.setConnectTimeout(15000);
+      _conn.setReadTimeout(45000);
+      _conn.setDoOutput(true);
+      _conn.setChunkedStreamingMode(4096);
+      _conn.setRequestProperty("Content-Type", "application/json");
+      _conn.setRequestProperty("X-Api-Key", _apiKey);
+      _conn.setRequestProperty("X-Api-Resource-Id", OFFLINE_RESOURCE);
+      _conn.setRequestProperty("X-Api-Request-Id", UUID.randomUUID().toString());
+      _conn.setRequestProperty("X-Api-Sequence", "-1");
+      _out = _conn.getOutputStream();
+      write_utf8(_out, "{\"user\":{\"uid\":" + JSONObject.quote(_uid)
+          + "},\"audio\":{\"format\":\"ogg\",\"data\":\"");
+      StreamingBase64Writer base64 = new StreamingBase64Writer(_out);
+      _worker = new Thread(() -> encode_and_upload(base64),
+          "voice-input-offline-ogg");
+      _worker.start();
+    }
+
+    @Override
+    public void send_audio(byte[] pcmData, int length)
+    {
+      if (pcmData == null || length <= 0)
+        return;
+      synchronized (_lock)
+      {
+        if (_closed || _finishQueued)
+          return;
+      }
+      int offset = 0;
+      while (offset < length)
+      {
+        int copyLength = Math.min(_chunkBytes, length - offset);
+        byte[] copy = new byte[copyLength];
+        System.arraycopy(pcmData, offset, copy, 0, copyLength);
+        synchronized (_lock)
+        {
+          if (_closed || _finishQueued)
+            return;
+          _queue.offer(copy);
+        }
+        offset += copyLength;
+      }
+    }
+
+    @Override
+    public String finish_and_get_result() throws Exception
+    {
+      synchronized (_lock)
+      {
+        if (!_closed && !_finishQueued)
+        {
+          _finishQueued = true;
+          _queue.offer(END);
+        }
+      }
+      Thread worker = _worker;
+      if (worker != null)
+        worker.join();
+      if (_error != null)
+        throw _error;
+
+      int httpCode = _conn.getResponseCode();
+      String apiStatus = _conn.getHeaderField("X-Api-Status-Code");
+      String response = Utils.read_all_utf8(httpCode >= 400
+          ? _conn.getErrorStream()
+          : _conn.getInputStream());
+      if (httpCode != 200)
+        throw new RuntimeException("HTTP " + httpCode + ": " + response);
+      if (apiStatus != null && !apiStatus.equals("20000000"))
+        throw new RuntimeException("API " + apiStatus + ": " + response);
+      return parse_result_text(new JSONObject(response)).trim();
+    }
+
+    @Override
+    public void cancel()
+    {
+      synchronized (_lock)
+      {
+        if (_closed)
+          return;
+        _closed = true;
+        _finishQueued = true;
+        _queue.offer(END);
+      }
+      try
+      {
+        if (_out != null)
+          _out.close();
+      }
+      catch (Exception _e) {}
+      if (_conn != null)
+        _conn.disconnect();
+    }
+
+    private void encode_and_upload(StreamingBase64Writer base64)
+    {
+      MediaCodec codec = null;
+      try
+      {
+        OggOpusMuxer muxer = new OggOpusMuxer(base64,
+            (int)UUID.randomUUID().getLeastSignificantBits());
+        muxer.write_headers();
+
+        MediaFormat format = MediaFormat.createAudioFormat(
+            MediaFormat.MIMETYPE_AUDIO_OPUS, SAMPLE_RATE, OPUS_CHANNELS);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, OPUS_BITRATE);
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, _chunkBytes);
+        codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS);
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        codec.start();
+
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        byte[] pending = null;
+        int pendingOffset = 0;
+        long inputBytes = 0;
+        boolean inputDone = false;
+        boolean outputDone = false;
+        while (!outputDone)
+        {
+          if (!inputDone)
+          {
+            int inputIndex = codec.dequeueInputBuffer(10000);
+            if (inputIndex >= 0)
+            {
+              if (pending == null || pendingOffset >= pending.length)
+              {
+                pending = _queue.take();
+                pendingOffset = 0;
+              }
+              ByteBuffer input = codec.getInputBuffer(inputIndex);
+              input.clear();
+              if (pending == END)
+              {
+                long pts = inputBytes * 1000000L / (SAMPLE_RATE * 2);
+                codec.queueInputBuffer(inputIndex, 0, 0, pts,
+                    MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                inputDone = true;
+              }
+              else
+              {
+                int length = Math.min(input.remaining(),
+                    pending.length - pendingOffset);
+                input.put(pending, pendingOffset, length);
+                long pts = inputBytes * 1000000L / (SAMPLE_RATE * 2);
+                codec.queueInputBuffer(inputIndex, 0, length, pts, 0);
+                inputBytes += length;
+                pendingOffset += length;
+                if (pendingOffset >= pending.length)
+                  pending = null;
+              }
+            }
+          }
+
+          while (true)
+          {
+            int outputIndex = codec.dequeueOutputBuffer(info, 0);
+            if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER)
+              break;
+            if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED)
+              continue;
+            if (outputIndex < 0)
+              continue;
+            if (info.size > 0
+                && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0)
+            {
+              ByteBuffer output = codec.getOutputBuffer(outputIndex);
+              byte[] packet = new byte[info.size];
+              output.position(info.offset);
+              output.limit(info.offset + info.size);
+              output.get(packet);
+              muxer.write_packet(packet);
+            }
+            boolean eos =
+              (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+            codec.releaseOutputBuffer(outputIndex, false);
+            if (eos)
+            {
+              outputDone = true;
+              break;
+            }
+          }
+        }
+        muxer.finish();
+        base64.finish();
+        write_utf8(_out, "\"},\"request\":{\"model_name\":\"bigmodel\","
+            + "\"enable_itn\":true,\"enable_punc\":true,"
+            + "\"show_utterances\":true}}");
+        _out.close();
+      }
+      catch (Exception e)
+      {
+        synchronized (_lock)
+        {
+          if (!_closed)
+            _error = e instanceof Exception ? (Exception)e : new RuntimeException(e);
+        }
+        try
+        {
+          if (_out != null)
+            _out.close();
+        }
+        catch (Exception _e) {}
+      }
+      finally
+      {
+        if (codec != null)
+        {
+          try { codec.stop(); } catch (Exception _e) {}
+          try { codec.release(); } catch (Exception _e) {}
+        }
+      }
+    }
+
+    private static void write_utf8(OutputStream out, String text)
+        throws IOException
+    {
+      out.write(text.getBytes("UTF-8"));
+    }
+  }
+
+  static final class StreamingBase64Writer
+  {
+    private final OutputStream _out;
+    private final byte[] _pending = new byte[2];
+    private int _pendingLength = 0;
+
+    StreamingBase64Writer(OutputStream out)
+    {
+      _out = out;
+    }
+
+    void write(byte[] data) throws IOException
+    {
+      write(data, 0, data.length);
+    }
+
+    void write(byte[] data, int offset, int length) throws IOException
+    {
+      if (length <= 0)
+        return;
+      int pos = offset;
+      int remaining = length;
+      if (_pendingLength > 0)
+      {
+        byte[] full = new byte[3];
+        System.arraycopy(_pending, 0, full, 0, _pendingLength);
+        int needed = 3 - _pendingLength;
+        if (remaining < needed)
+        {
+          System.arraycopy(data, pos, _pending, _pendingLength, remaining);
+          _pendingLength += remaining;
+          return;
+        }
+        System.arraycopy(data, pos, full, _pendingLength, needed);
+        write_encoded(full, 0, full.length);
+        pos += needed;
+        remaining -= needed;
+        _pendingLength = 0;
+      }
+
+      int bulkLength = remaining - (remaining % 3);
+      if (bulkLength > 0)
+      {
+        write_encoded(data, pos, bulkLength);
+        pos += bulkLength;
+        remaining -= bulkLength;
+      }
+      if (remaining > 0)
+      {
+        System.arraycopy(data, pos, _pending, 0, remaining);
+        _pendingLength = remaining;
+      }
+    }
+
+    void finish() throws IOException
+    {
+      if (_pendingLength > 0)
+      {
+        write_encoded(_pending, 0, _pendingLength);
+        _pendingLength = 0;
+      }
+    }
+
+    void flush() throws IOException
+    {
+      _out.flush();
+    }
+
+    private void write_encoded(byte[] data, int offset, int length)
+        throws IOException
+    {
+      _out.write(Base64.encode(data, offset, length, Base64.NO_WRAP));
+    }
+  }
+
+  static final class OggOpusMuxer
+  {
+    private static final int[] CRC_LOOKUP = build_crc_lookup();
+
+    private final StreamingBase64Writer _out;
+    private final int _serial;
+    private int _sequence = 0;
+    private long _granule = 0;
+
+    OggOpusMuxer(StreamingBase64Writer out, int serial)
+    {
+      _out = out;
+      _serial = serial;
+    }
+
+    void write_headers() throws IOException
+    {
+      ByteArrayOutputStream head = new ByteArrayOutputStream();
+      head.write("OpusHead".getBytes("US-ASCII"));
+      head.write(1);
+      head.write(OPUS_CHANNELS);
+      write_short_le(head, 0);
+      write_int_le(head, SAMPLE_RATE);
+      write_short_le(head, 0);
+      head.write(0);
+      write_page(head.toByteArray(), 0x02, 0);
+
+      ByteArrayOutputStream tags = new ByteArrayOutputStream();
+      byte[] vendor = "Unexpected Keyboard".getBytes("UTF-8");
+      tags.write("OpusTags".getBytes("US-ASCII"));
+      write_int_le(tags, vendor.length);
+      tags.write(vendor);
+      write_int_le(tags, 0);
+      write_page(tags.toByteArray(), 0, 0);
+    }
+
+    void write_packet(byte[] packet) throws IOException
+    {
+      _granule += opus_packet_samples(packet);
+      write_page(packet, 0, _granule);
+    }
+
+    void finish() throws IOException
+    {
+      write_page(new byte[0], 0x04, _granule);
+    }
+
+    private void write_page(byte[] packet, int headerType, long granule)
+        throws IOException
+    {
+      int segmentCount = packet.length / 255 + 1;
+      ByteArrayOutputStream page = new ByteArrayOutputStream();
+      page.write("OggS".getBytes("US-ASCII"));
+      page.write(0);
+      page.write(headerType);
+      write_long_le(page, granule);
+      write_int_le(page, _serial);
+      write_int_le(page, _sequence++);
+      write_int_le(page, 0);
+      page.write(segmentCount);
+      int remaining = packet.length;
+      for (int i = 0; i < segmentCount; ++i)
+      {
+        int value = remaining >= 255 ? 255 : remaining;
+        page.write(value);
+        remaining -= value;
+      }
+      page.write(packet);
+      byte[] bytes = page.toByteArray();
+      int crc = ogg_crc(bytes);
+      bytes[22] = (byte)(crc & 0xff);
+      bytes[23] = (byte)((crc >> 8) & 0xff);
+      bytes[24] = (byte)((crc >> 16) & 0xff);
+      bytes[25] = (byte)((crc >> 24) & 0xff);
+      _out.write(bytes);
+      _out.flush();
+    }
+
+    private static int opus_packet_samples(byte[] packet)
+    {
+      if (packet.length == 0)
+        return 0;
+      int toc = packet[0] & 0xff;
+      int config = toc >> 3;
+      int frameSamples;
+      if (config < 12)
+        frameSamples = new int[]{480, 960, 1920, 2880}[config & 3];
+      else if (config < 16)
+        frameSamples = new int[]{480, 960}[config & 1];
+      else
+        frameSamples = new int[]{120, 240, 480, 960}[config & 3];
+
+      int frameCount;
+      switch (toc & 3)
+      {
+        case 0:
+          frameCount = 1;
+          break;
+        case 1:
+        case 2:
+          frameCount = 2;
+          break;
+        default:
+          frameCount = packet.length > 1 ? packet[1] & 0x3f : 0;
+          break;
+      }
+      return frameSamples * frameCount;
+    }
+
+    private static int[] build_crc_lookup()
+    {
+      int[] lookup = new int[256];
+      for (int i = 0; i < lookup.length; ++i)
+      {
+        int r = i << 24;
+        for (int j = 0; j < 8; ++j)
+          r = (r & 0x80000000) != 0 ? (r << 1) ^ 0x04c11db7 : r << 1;
+        lookup[i] = r;
+      }
+      return lookup;
+    }
+
+    private static int ogg_crc(byte[] bytes)
+    {
+      int crc = 0;
+      for (byte b : bytes)
+        crc = (crc << 8) ^ CRC_LOOKUP[((crc >>> 24) & 0xff) ^ (b & 0xff)];
+      return crc;
+    }
+
+    private static void write_short_le(OutputStream out, int value)
+        throws IOException
+    {
+      out.write(value & 0xff);
+      out.write((value >> 8) & 0xff);
+    }
+
+    private static void write_int_le(OutputStream out, int value)
+        throws IOException
+    {
+      out.write(value & 0xff);
+      out.write((value >> 8) & 0xff);
+      out.write((value >> 16) & 0xff);
+      out.write((value >> 24) & 0xff);
+    }
+
+    private static void write_long_le(OutputStream out, long value)
+        throws IOException
+    {
+      for (int i = 0; i < 8; ++i)
+        out.write((int)(value >> (8 * i)) & 0xff);
     }
   }
 
