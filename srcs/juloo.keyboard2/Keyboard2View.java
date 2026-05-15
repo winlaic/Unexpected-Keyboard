@@ -2,7 +2,6 @@ package juloo.keyboard2;
 
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.graphics.Bitmap;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -67,8 +66,6 @@ public class Keyboard2View extends View
   private final RectF _voiceLeftSlotBounds = new RectF();
   private final RectF _voiceRightSlotBounds = new RectF();
   private final RectF _voiceKeyboardBounds = new RectF();
-  private Bitmap _voiceBlurBitmap = null;
-  private long _voiceBlurStartedAtMs = -1L;
   private static final float VOICE_DESIGN_WIDTH = 412.f;
   private static final float VOICE_DESIGN_SPACE_LEFT = 117.f;
   private static final float VOICE_DESIGN_SPACE_TOP = 296.f;
@@ -448,12 +445,7 @@ public class Keyboard2View extends View
   @Override
   protected void onDraw(Canvas canvas)
   {
-    VoiceInputController.OverlayState voiceState =
-      (_voiceInputController == null) ? null : _voiceInputController.get_overlay_state();
-    if (voiceState != null && voiceState.visible)
-      drawVoiceBlurredKeyboard(canvas, voiceState);
-    else
-      drawKeyboardContent(canvas);
+    drawKeyboardContent(canvas);
     drawVoiceOverlay(canvas);
   }
 
@@ -751,7 +743,7 @@ public class Keyboard2View extends View
     _voiceKeyboardBounds.set(0.f, 0.f, getWidth(), getHeight());
 
     _voicePanelPaint.setStyle(Paint.Style.FILL);
-    _voicePanelPaint.setColor(Color.argb(115, 217, 217, 217));
+    _voicePanelPaint.setColor(Color.argb(204, 217, 217, 217));
     canvas.drawRect(_voiceKeyboardBounds, _voicePanelPaint);
 
     updateVoiceSlotBounds(state.anchor, _voiceLeftSlotBounds, _voiceRightSlotBounds);
@@ -878,88 +870,6 @@ public class Keyboard2View extends View
     if (isAnimatedFan)
       return t;
     return wasPreviousFan ? 1.f - t : 0.f;
-  }
-
-  private void drawVoiceBlurredKeyboard(Canvas canvas,
-      VoiceInputController.OverlayState state)
-  {
-    int w = Math.max(1, getWidth() / 4);
-    int h = Math.max(1, getHeight() / 4);
-    if (_voiceBlurBitmap == null
-        || _voiceBlurBitmap.getWidth() != w
-        || _voiceBlurBitmap.getHeight() != h
-        || _voiceBlurStartedAtMs != state.startedAtMs)
-    {
-      _voiceBlurBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-      Canvas blurCanvas = new Canvas(_voiceBlurBitmap);
-      blurCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-      blurCanvas.scale(w / (float)getWidth(), h / (float)getHeight());
-      drawKeyboardContent(blurCanvas);
-      blurBitmap(_voiceBlurBitmap, 6);
-      blurBitmap(_voiceBlurBitmap, 6);
-      _voiceBlurStartedAtMs = state.startedAtMs;
-    }
-    canvas.drawBitmap(_voiceBlurBitmap, null,
-        new RectF(0.f, 0.f, getWidth(), getHeight()), null);
-  }
-
-  private void blurBitmap(Bitmap bitmap, int radius)
-  {
-    int w = bitmap.getWidth();
-    int h = bitmap.getHeight();
-    if (radius < 1 || w < 2 || h < 2)
-      return;
-    int[] src = new int[w * h];
-    int[] tmp = new int[w * h];
-    bitmap.getPixels(src, 0, w, 0, 0, w, h);
-    blurHorizontal(src, tmp, w, h, radius);
-    blurVertical(tmp, src, w, h, radius);
-    bitmap.setPixels(src, 0, w, 0, 0, w, h);
-  }
-
-  private void blurHorizontal(int[] src, int[] dst, int w, int h, int radius)
-  {
-    int window = radius * 2 + 1;
-    for (int y = 0; y < h; y++)
-    {
-      int row = y * w;
-      for (int x = 0; x < w; x++)
-      {
-        int a = 0, r = 0, g = 0, b = 0;
-        for (int i = -radius; i <= radius; i++)
-        {
-          int px = Math.max(0, Math.min(w - 1, x + i));
-          int c = src[row + px];
-          a += Color.alpha(c);
-          r += Color.red(c);
-          g += Color.green(c);
-          b += Color.blue(c);
-        }
-        dst[row + x] = Color.argb(a / window, r / window, g / window, b / window);
-      }
-    }
-  }
-
-  private void blurVertical(int[] src, int[] dst, int w, int h, int radius)
-  {
-    int window = radius * 2 + 1;
-    for (int y = 0; y < h; y++)
-    {
-      for (int x = 0; x < w; x++)
-      {
-        int a = 0, r = 0, g = 0, b = 0;
-        for (int i = -radius; i <= radius; i++)
-        {
-          int py = Math.max(0, Math.min(h - 1, y + i));
-          int c = src[py * w + x];
-          a += Color.alpha(c);
-          r += Color.red(c);
-          g += Color.green(c);
-          b += Color.blue(c);
-        }
-        dst[y * w + x] = Color.argb(a / window, r / window, g / window, b / window);
-      }
-    }
   }
 
   private void drawVoiceSpaceMask(Canvas canvas, RectF bounds)
