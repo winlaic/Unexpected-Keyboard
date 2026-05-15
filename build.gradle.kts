@@ -3,12 +3,20 @@ import java.io.FileOutputStream
 
 plugins {
   id("com.android.application") version "8.13.2"
+  id("org.jetbrains.kotlin.android") version "2.0.21"
+  id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
 }
 
 dependencies {
   // Following versions of androidx.window require sdk version 23
   implementation("androidx.window:window-java:1.4.0")
   implementation("androidx.core:core:1.16.0") // Version 1.17.0 available with sdk 36
+  implementation("androidx.activity:activity-compose:1.10.1")
+  implementation(platform("androidx.compose:compose-bom:2025.01.00"))
+  implementation("androidx.compose.foundation:foundation")
+  implementation("androidx.compose.material3:material3")
+  implementation("androidx.compose.ui:ui")
+  implementation("androidx.compose.ui:ui-text")
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
   testImplementation("junit:junit:4.13.2")
 }
@@ -29,6 +37,7 @@ android {
     named("main") {
       manifest.srcFile("AndroidManifest.xml")
       java.srcDirs("srcs/juloo.keyboard2", "vendor/cdict/java/juloo.cdict")
+      kotlin.srcDirs("srcs/juloo.keyboard2")
       res.srcDirs("res", "build/generated-resources")
       assets.srcDirs("assets")
     }
@@ -93,6 +102,12 @@ android {
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
+  }
+}
+
+kotlin {
+  compilerOptions {
+    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
   }
 }
 

@@ -84,6 +84,7 @@
     <string name="key_action_send">傳送</string>
     <string name="launcher_button_imesettings">啟用鍵盤</string>
     <string name="launcher_button_imepicker">選擇鍵盤</string>
+    <string name="launcher_button_settings">設定</string>
     <string name="launcher_description">此應用程式是一個虛擬鍵盤。透過下面的按鈕前往系統設定啟用Unexpected-Keyboard。</string>
     <string name="launcher_sourcecode">這是一個免費且開源的應用程式。你可以在GitHub上找到原始碼，或是回報錯誤。</string>
     <string name="launcher_tryhere">啟用鍵盤後，你可以在這裡測試鍵盤：</string>
@@ -176,6 +177,7 @@
     <string name="voice_input_auto_send_title">右側區域自動送出</string>
     <string name="voice_input_trigger_delay_title">觸發語音輸入前的長按延遲</string>
     <string name="voice_input_trigger_delay_value">%d 毫秒</string>
+    <string name="voice_input_offline_chunk_title">離線上傳分塊大小</string>
     <string name="voice_input_permission_title">麥克風權限</string>
     <string name="voice_input_permission_granted">已授權</string>
     <string name="voice_input_permission_missing">未授權</string>

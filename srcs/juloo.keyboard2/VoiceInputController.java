@@ -11,7 +11,6 @@ import android.media.MediaRecorder;
 import android.os.Build.VERSION;
 import android.os.Handler;
 import android.view.inputmethod.InputConnection;
-import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 
 final class VoiceInputController
@@ -108,14 +107,12 @@ final class VoiceInputController
     if (!VoiceInputConfig.has_credentials(prefs))
     {
       Logs.debug("voice-input missing credentials");
-      toast(R.string.voice_input_missing_credentials);
       open_settings();
       return false;
     }
     if (!has_record_audio_permission())
     {
       Logs.debug("voice-input missing record permission");
-      toast(R.string.voice_input_need_permission);
       open_settings();
       return false;
     }
@@ -204,7 +201,6 @@ final class VoiceInputController
       }
       clear_composing_text();
       reset_ui();
-      toast(R.string.voice_input_cancelled);
       run_async("voice-input-cancel", () -> {
         stop_recording();
         if (session != null)
@@ -244,7 +240,6 @@ final class VoiceInputController
             return;
           clear_composing_text();
           reset_ui();
-          toast(R.string.voice_input_failed);
         });
       }
     });
@@ -322,10 +317,7 @@ final class VoiceInputController
         conn.endBatchEdit();
       }
       if (action == ReleaseAction.SEND)
-      {
         perform_send_action();
-        toast(R.string.voice_input_sent);
-      }
     }
     finally
     {
@@ -373,7 +365,6 @@ final class VoiceInputController
     }
     clear_composing_text();
     reset_ui();
-    toast(R.string.voice_input_failed);
     run_async("voice-input-fail", () -> {
       stop_recording();
       if (session != null)
@@ -739,14 +730,9 @@ final class VoiceInputController
 
   private void open_settings()
   {
-    Intent intent = new Intent(_ims, VoiceInputSettingsActivity.class);
+    Intent intent = new Intent(_ims, ComposeVoiceInputSettingsActivity.class);
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     _ims.startActivity(intent);
-  }
-
-  private void toast(int stringId)
-  {
-    Toast.makeText(_ims, stringId, Toast.LENGTH_SHORT).show();
   }
 
   private void notify_ui()

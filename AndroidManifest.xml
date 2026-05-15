@@ -14,22 +14,22 @@
       <meta-data android:name="android.view.im" android:resource="@xml/method"/>
     </service>
 
-    <activity android:name="juloo.keyboard2.SettingsActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/settingsTheme" android:exported="true" android:directBootAware="true">
+    <activity android:name="juloo.keyboard2.ComposeSettingsActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/composeAppTheme" android:exported="true" android:directBootAware="true" android:hardwareAccelerated="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
       </intent-filter>
     </activity>
 
-    <activity android:name="juloo.keyboard2.VoiceInputSettingsActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/settingsTheme" android:exported="false" android:directBootAware="true"/>
+    <activity android:name="juloo.keyboard2.ComposeVoiceInputSettingsActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/composeAppTheme" android:exported="false" android:directBootAware="true" android:hardwareAccelerated="true" android:windowSoftInputMode="adjustResize"/>
 
-    <activity android:name="juloo.keyboard2.LauncherActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/appTheme" android:exported="true" android:directBootAware="true">
+    <activity android:name="juloo.keyboard2.ComposeLauncherActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/composeAppTheme" android:exported="true" android:directBootAware="true" android:hardwareAccelerated="true" android:windowSoftInputMode="adjustResize">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
 
-    <activity android:name="juloo.keyboard2.dict.DictionariesActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/appTheme" android:exported="true" android:directBootAware="true">
+    <activity android:name="juloo.keyboard2.dict.ComposeDictionariesActivity" android:icon="@mipmap/ic_launcher" android:theme="@style/composeAppTheme" android:exported="true" android:directBootAware="true" android:hardwareAccelerated="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
       </intent-filter>

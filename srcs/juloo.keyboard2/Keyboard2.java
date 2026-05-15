@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Set;
 import juloo.cdict.Cdict;
 import juloo.keyboard2.dict.Dictionaries;
-import juloo.keyboard2.dict.DictionariesActivity;
+import juloo.keyboard2.dict.ComposeDictionariesActivity;
 import juloo.keyboard2.prefs.LayoutsPreference;
 import juloo.keyboard2.suggestions.CandidatesView;
 import juloo.keyboard2.suggestions.Suggestions;
@@ -389,7 +389,7 @@ public class Keyboard2 extends InputMethodService
   /** Called from [onClick] attributes. */
   public void launch_dictionaries_activity(View v)
   {
-    start_activity(DictionariesActivity.class);
+    start_activity(ComposeDictionariesActivity.class);
   }
 
   void start_activity(Class cls)
@@ -407,7 +407,7 @@ public class Keyboard2 extends InputMethodService
       switch (ev)
       {
         case CONFIG:
-          start_activity(SettingsActivity.class);
+          start_activity(ComposeSettingsActivity.class);
           break;
 
         case SWITCH_TEXT:
